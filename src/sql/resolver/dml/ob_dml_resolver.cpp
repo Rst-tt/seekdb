@@ -88,7 +88,7 @@ bool is_file_sql_function(const ObRawExpr *expr, ObFileSqlFormat &format)
 int get_static_file_path(const ObRawExpr *expr, common::ObString &path)
 {
   int ret = common::OB_SUCCESS;
-  if (OB_ISNULL(expr) || !expr->is_static_const_expr()) {
+  if (OB_ISNULL(expr) || !expr->is_const_raw_expr()) {
     ret = common::OB_NOT_SUPPORTED;
   } else {
     const ObConstRawExpr *const_expr = static_cast<const ObConstRawExpr *>(expr);
@@ -125,6 +125,27 @@ int materialize_static_file_path(ObRawExprFactory *expr_factory,
     path_literal->set_data_type(ObVarcharType);
     if (OB_FAIL(static_cast<ObSysFunRawExpr *>(file_expr)->replace_param_expr(0, path_literal))) {
     } else if (OB_FAIL(file_expr->extract_info())) {
+    }
+  }
+  return ret;
+}
+
+int get_static_int_value(const ObRawExpr *expr, int64_t &value)
+{
+  int ret = common::OB_SUCCESS;
+  if (OB_ISNULL(expr) || !expr->is_const_raw_expr()) {
+    ret = common::OB_NOT_SUPPORTED;
+  } else {
+    const ObConstRawExpr *const_expr = static_cast<const ObConstRawExpr *>(expr);
+    const common::ObObj &const_value = const_expr->get_value();
+    const common::ObObj &param = const_expr->get_param();
+    const common::ObObj &actual_value = const_value.is_unknown() ? param : const_value;
+    if (actual_value.is_int()) {
+      value = actual_value.get_int();
+    } else if (common::ObTinyIntType == actual_value.get_type()) {
+      value = actual_value.get_bool() ? 1 : 0;
+    } else {
+      ret = common::OB_INVALID_ARGUMENT;
     }
   }
   return ret;
@@ -4013,6 +4034,9 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
   ObRawExpr *function_table_expr = NULL;
   TableItem *item = NULL;
   ObString alias_name;
+  int64_t header_option = 1;
+  char delimiter_option = ',';
+  char quote_option = '"';
   CK (OB_LIKELY(T_TABLE_COLLECTION_EXPRESSION == parse_tree.type_));
   CK (OB_LIKELY(2 == parse_tree.num_child_));
   CK (OB_NOT_NULL(parse_tree.children_[0]));
@@ -4047,8 +4071,8 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
           ParseNode *value_node = arg_node;
           ObString arg_name;
           bool is_named = false;
-          if (OB_NOT_NULL(arg_node) && T_LINK_NODE == arg_node->type_ &&
-              arg_node->num_child_ == 1 && OB_NOT_NULL(arg_node->str_value_)) {
+          if (OB_NOT_NULL(arg_node) && arg_node->num_child_ == 1 &&
+              OB_NOT_NULL(arg_node->str_value_) && arg_node->str_len_ > 0) {
             is_named = true;
             arg_name.assign_ptr(arg_node->str_value_, arg_node->str_len_);
             value_node = arg_node->children_[0];
@@ -4067,11 +4091,11 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
           } else if (is_named && 0 == arg_name.case_compare("quote")) {
             quote_expr = value_expr;
           } else if (is_named && 0 == arg_name.case_compare("sample_size")) {
-            if (!value_expr->is_static_const_expr() ||
-                !static_cast<const ObConstRawExpr *>(value_expr)->get_value().is_int()) {
+            int64_t sample_size = 0;
+            if (OB_FAIL(get_static_int_value(value_expr, sample_size))) {
               ret = OB_INVALID_ARGUMENT;
               LOG_USER_ERROR(OB_INVALID_ARGUMENT, "sample_size must be -1");
-            } else if (-1 != static_cast<const ObConstRawExpr *>(value_expr)->get_value().get_int()) {
+            } else if (-1 != sample_size) {
               ret = OB_NOT_SUPPORTED;
               LOG_USER_ERROR(OB_NOT_SUPPORTED, "only full-file schema inference is supported");
             }
@@ -4085,6 +4109,30 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
             ret = OB_INVALID_ARGUMENT;
             LOG_USER_ERROR(OB_INVALID_ARGUMENT, "unsupported file table argument");
           }
+        }
+      }
+      if (OB_SUCC(ret) && OB_NOT_NULL(header_expr)) {
+        if (OB_FAIL(get_static_int_value(header_expr, header_option))) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "header must be a constant integer");
+        }
+      }
+      if (OB_SUCC(ret) && OB_NOT_NULL(delimiter_expr)) {
+        ObString delimiter;
+        if (OB_FAIL(get_static_file_path(delimiter_expr, delimiter)) || delimiter.empty()) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "delimiter must be a constant string");
+        } else {
+          delimiter_option = delimiter[0];
+        }
+      }
+      if (OB_SUCC(ret) && OB_NOT_NULL(quote_expr)) {
+        ObString quote;
+        if (OB_FAIL(get_static_file_path(quote_expr, quote)) || quote.empty()) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "quote must be a constant string");
+        } else {
+          quote_option = quote[0];
         }
       }
       if (OB_FAIL(ret)) {
@@ -4252,6 +4300,9 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
         common::ObArray<ObFileSqlColumn> file_columns;
         ObString error_msg;
         ObFileSqlOptions file_options;
+        file_options.header_ = header_option != 0;
+        file_options.delimiter_ = delimiter_option;
+        file_options.quote_ = quote_option;
         if (OB_FAIL(get_static_file_path(function_table_expr->get_param_expr(0), file_path))) {
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "file sql path must be a constant string");
           ret = OB_NOT_SUPPORTED;
@@ -4285,7 +4336,8 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
           if (!error_msg.empty()) {
             FORWARD_USER_ERROR_MSG(ret, "%.*s", error_msg.length(), error_msg.ptr());
           }
-        } else {
+        }
+        if (OB_SUCC(ret)) {
           for (int64_t i = 0; OB_SUCC(ret) && i < file_columns.count(); ++i) {
             const ObFileSqlColumn &file_col = file_columns.at(i);
             ColumnItem *col_item = NULL;

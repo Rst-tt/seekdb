@@ -1961,6 +1961,21 @@ int ObSqlParameterization::mark_tree(ParseNode *tree ,SqlInfo &sql_info)
         }
       } else if ((0 == func_name.case_compare("concat")) && 1 == node[0]->reserved_) {
         sql_info.ps_need_parameterized_ = false;
+      } else if (0 == func_name.case_compare("read_csv") ||
+                 0 == func_name.case_compare("read_json") ||
+                 0 == func_name.case_compare("read_ndjson") ||
+                 0 == func_name.case_compare("read_parquet") ||
+                 0 == func_name.case_compare("glob")) {
+        sql_info.ps_need_parameterized_ = false;
+        tree->is_tree_not_param_ = true;
+        for (int64_t i = 0; OB_SUCC(ret) && i < node[1]->num_child_; ++i) {
+          if (OB_ISNULL(node[1]->children_[i])) {
+            ret = OB_INVALID_ARGUMENT;
+            SQL_PC_LOG(WARN, "invalid file table argument", K(ret), K(i));
+          } else {
+            node[1]->children_[i]->is_tree_not_param_ = true;
+          }
+        }
       } else if ((0 == func_name.case_compare("json_equal"))) {
         sql_info.ps_need_parameterized_ = false;
       } else if ((0 == func_name.case_compare("json_extract"))) {
