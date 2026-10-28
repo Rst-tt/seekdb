@@ -27,6 +27,7 @@
 #include "sql/ob_sql_define.h"
 #include "sql/resolver/dml/ob_sql_hint.h"
 #include "sql/ob_sql_utils.h"
+#include "sql/resolver/dml/ob_file_table_def.h"
 #include "sql/resolver/dml/ob_raw_expr_sets.h"
 #include "sql/resolver/expr/ob_raw_expr_copier.h"
 #include "sql/resolver/dml/ob_stmt_expr_visitor.h"
@@ -155,6 +156,7 @@ struct TableItem
     json_table_def_ = nullptr;
     table_type_ = MAX_TABLE_TYPE;
     values_table_def_ = NULL;
+    file_table_def_ = NULL;
     sample_info_ = nullptr;
   }
 
@@ -224,6 +226,7 @@ struct TableItem
   bool is_function_table() const { return FUNCTION_TABLE == type_; }
   bool is_json_table() const { return JSON_TABLE == type_; }  // json_table_def_->table_type_ == MulModeTableType::OB_ORA_JSON_TABLE_TYPE
   bool is_values_table() const { return VALUES_TABLE == type_; }//used to mark values statement: values row(1,2), row(3,4);
+  bool is_file_table() const { return VALUES_TABLE == type_ && NULL != file_table_def_; }
 
   bool is_lateral_table() const { return LATERAL_TABLE == type_; }
   bool is_extended_all_or_user_sys_view() const
@@ -303,6 +306,8 @@ struct TableItem
   ObJsonTableDef *json_table_def_;
   // values table
   ObValuesTableDef *values_table_def_;
+  // file table (read_csv/read_json/read_parquet/glob), rows are expanded into the values table
+  ObFileTableDef *file_table_def_;
   // sample scan infos
   SampleInfo *sample_info_;
 };
