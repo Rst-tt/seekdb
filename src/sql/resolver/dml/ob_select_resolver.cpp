@@ -1657,7 +1657,20 @@ int ObSelectResolver::expand_target_list(
   } else if (table_item.is_values_table()) {
     if (OB_ISNULL(get_stmt()) || OB_UNLIKELY(get_stmt()->get_column_size() == 0)) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(append(column_items, get_stmt()->get_column_items()))) {
+    } else {
+      const common::ObIArray<ColumnItem> &stmt_columns = get_stmt()->get_column_items();
+      for (int64_t i = 0; OB_SUCC(ret) && i < stmt_columns.count(); ++i) {
+        const ColumnItem &col_item = stmt_columns.at(i);
+        if (col_item.table_id_ == table_item.table_id_) {
+          if (OB_FAIL(column_items.push_back(col_item))) {
+            SQL_RESV_LOG(WARN, "push back column item failed", K(ret));
+          }
+        }
+      }
+      if (OB_SUCC(ret) && column_items.empty()) {
+        ret = OB_ERR_BAD_FIELD_ERROR;
+        SQL_RESV_LOG(WARN, "the values table has no column", K(ret), K(table_item.table_id_));
+      }
     }
   } else {
     ret = OB_ERR_UNEXPECTED;

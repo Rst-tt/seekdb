@@ -38,7 +38,7 @@ OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
 OB_SERIALIZE_MEMBER((ObSelectIntoSpec, ObOpSpec), into_type_, user_vars_, outfile_name_,
     field_str_, line_str_, closed_cht_, is_optional_, select_exprs_, is_single_, max_file_size_,
     escaped_cht_, cs_type_, parallel_, buffer_size_, is_overwrite_,
-    external_properties_);
+    external_properties_, has_header_, header_str_);
 
 
 int ObSelectIntoOp::inner_open()
@@ -200,6 +200,14 @@ int ObSelectIntoOp::inner_get_next_row()
       && T_INTO_VARIABLES != into_type
       && OB_FAIL(create_the_only_data_writer(data_writer))) {
   }
+  if (OB_SUCC(ret) && !header_written_ && NULL != data_writer
+      && T_INTO_OUTFILE == into_type
+      && ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_) {
+    if (OB_FAIL(write_csv_header(*static_cast<ObCsvFileWriter *>(data_writer)))) {
+    } else {
+      header_written_ = true;
+    }
+  }
   while (OB_SUCC(ret) && row_count < top_limit_cnt_) {
     clear_evaluated_flag();
     if (OB_FAIL(child_->get_next_row())) {
@@ -256,6 +264,14 @@ int ObSelectIntoOp::inner_get_next_batch(const int64_t max_row_cnt)
     }
   }
 
+  if (OB_SUCC(ret) && !header_written_ && NULL != data_writer
+      && T_INTO_OUTFILE == into_type
+      && ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_) {
+    if (OB_FAIL(write_csv_header(*static_cast<ObCsvFileWriter *>(data_writer)))) {
+    } else {
+      header_written_ = true;
+    }
+  }
   if (0 == top_limit_cnt_) {
     brs_.size_ = 0;
     brs_.end_ = true;
@@ -939,6 +955,36 @@ int ObSelectIntoOp::print_field(const ObObj &obj, ObCsvFileWriter &data_writer)
   }
   if (need_enclose) {
     OZ(write_single_char_to_file(&char_enclose_, data_writer));
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::write_csv_header(ObCsvFileWriter &data_writer)
+{
+  int ret = OB_SUCCESS;
+  const ObString &header = MY_SPEC.header_str_;
+  if (!MY_SPEC.has_header_ || 0 == header.length()) {
+    // nothing to do
+  } else {
+    int64_t start = 0;
+    while (OB_SUCC(ret) && start <= header.length()) {
+      int64_t end = start;
+      while (end < header.length() && '\x01' != header.ptr()[end]) {
+        ++end;
+      }
+      ObString name(static_cast<int32_t>(end - start), header.ptr() + start);
+      ObObj obj;
+      obj.set_varchar(name);
+      obj.set_collation_type(cs_type_);
+      obj.set_collation_level(CS_LEVEL_COERCIBLE);
+      if (OB_FAIL(write_obj_to_file(obj, data_writer, false))) {
+      } else if (end < header.length() && OB_FAIL(write_obj_to_file(field_str_, data_writer, false))) {
+      } else {
+        start = end + 1;
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(write_obj_to_file(line_str_, data_writer, false))) {
+    }
   }
   return ret;
 }

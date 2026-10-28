@@ -155,6 +155,13 @@
 %nonassoc PATH
 %nonassoc LOWER_THAN_BY_ACCESS_SESSION
 
+/* exactly one shift/reduce per keyword-led table function (JSON_TABLE,
+ * UNNEST, HYBRID_SEARCH) after table functions were added to table_factor;
+ * bison resolves them by shifting into the specialized rule, which is what
+ * the original grammar did. */
+%expect 3
+
+
 %token ERROR /*used internal*/
 %token PARSER_SYNTAX_ERROR /*used internal*/
 
@@ -514,6 +521,7 @@ END_P SET_VAR DELIMITER
 %type <node> vector_similarity_expr vector_similarity_metric
 %type <node> algorithm_opt lock_opt
 %type <node> flush_privileges_stmt opt_flush_privileges_scope
+%type <node> copy_stmt copy_option copy_option_name copy_option_list copy_option_value opt_copy_options opt_equal_mark_for_copy
 %start sql_stmt
 %%
 ////////////////////////////////////////////////////////////////
@@ -556,6 +564,7 @@ opt_end_p:
 /* only preparable statement will set question mark size */
 stmt:
     select_stmt             { $$ = $1; question_mark_issue($$, result); }
+  | copy_stmt               { $$ = $1; question_mark_issue($$, result); }
   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
   | create_table_stmt       {
     $$ = $1;
@@ -10792,6 +10801,18 @@ tbl_name
 {
   $$ = $1;
 }
+| relation_factor '(' expr_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, NULL);
+}
+| relation_factor '(' expr_list ')' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $5);
+}
+| relation_factor '(' expr_list ')' AS relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $6);
+}
 | table_subquery
 {
   $$ = $1;
@@ -12256,6 +12277,72 @@ $$ = NULL;
  *	explain grammar
  *
  *****************************************************************************/
+copy_stmt:
+    COPY '(' select_no_parens ')' TO STRING_VALUE opt_copy_options
+    {
+      malloc_non_terminal_node($$, result->malloc_pool_, T_COPY, 3, $3, $6, $7);
+    }
+  | COPY relation_factor TO STRING_VALUE opt_copy_options
+    {
+      malloc_non_terminal_node($$, result->malloc_pool_, T_COPY, 3, $2, $4, $5);
+    }
+  ;
+
+opt_copy_options:
+    /*empty*/
+    { $$ = NULL; }
+  | '(' copy_option_list ')'
+    { $$ = $2; }
+  ;
+
+copy_option_list:
+    copy_option
+    { $$ = $1; }
+  | copy_option_list ',' copy_option
+    {
+      malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
+    }
+  ;
+
+copy_option:
+    copy_option_name
+    { $$ = $1; }
+  | copy_option_name opt_equal_mark_for_copy copy_option_value
+    {
+      (void)($2);
+      malloc_non_terminal_node($$, result->malloc_pool_, T_OP_EQ, 2, $1, $3);
+    }
+  ;
+
+copy_option_name:
+    NAME_OB
+    { $$ = $1; }
+  | FORMAT
+    {
+      malloc_terminal_node($$, result->malloc_pool_, T_IDENT);
+      $$->str_value_ = (char *)"format";
+      $$->str_len_ = 6;
+    }
+  ;
+
+opt_equal_mark_for_copy:
+    /*empty*/
+    { $$ = NULL; }
+  | '='
+    { $$ = NULL; }
+  ;
+
+copy_option_value:
+    NAME_OB
+    { $$ = $1; }
+  | STRING_VALUE
+    { $$ = $1; }
+  | BOOL_VALUE
+    { $$ = $1; }
+  | number_literal
+    { $$ = $1; }
+  ;
+
 explain_stmt:
 explain_or_desc relation_factor opt_desc_column_option
 {
@@ -12265,7 +12352,15 @@ explain_or_desc relation_factor opt_desc_column_option
   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $2, NULL, $3);
 }
 
-| explain_or_desc explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);}
+| explain_or_desc explainable_stmt
+{
+  if (NULL != $1) {
+    /* DESCRIBE <stmt>: keep the T_DESCRIBE marker in the format slot */
+    malloc_non_terminal_node($$, result->malloc_pool_, T_EXPLAIN, 5, $1, NULL, NULL, NULL, $2);
+  } else {
+    GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);
+  }
+}
 | explain_or_desc PRETTY explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY, $3, NULL, NULL);}
 | explain_or_desc PRETTY_COLOR explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY_COLOR, $3, NULL, NULL);}
 
@@ -12306,8 +12401,14 @@ explain_or_desc relation_factor opt_desc_column_option
 
 explain_or_desc:
 EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
-| DESC  {$$ = NULL;}
+| DESCRIBE
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_DESCRIBE);
+}
+| DESC
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_DESCRIBE);
+}
 ;
 
 explainable_stmt:
