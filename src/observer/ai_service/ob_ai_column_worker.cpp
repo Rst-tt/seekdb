@@ -17,11 +17,11 @@
 #define USING_LOG_PREFIX SERVER
 #include "ob_ai_column_worker.h"
 
-#include <unistd.h>
 #include "common/mysqlclient/ob_mysql_proxy.h"
 #include "common/mysqlclient/ob_mysql_result.h"
 #include "lib/allocator/page_arena.h"
 #include "lib/string/ob_sql_string.h"
+#include "lib/utility/utility.h"
 #include "share/ob_server_struct.h"
 #include "share/rc/ob_server_runtime.h"
 #include "share/schema/ob_column_schema.h"
@@ -344,7 +344,7 @@ void ObAiColumnWorker::run_()
       }
     }
     for (int64_t i = 0; !stop_ && i < 10; ++i) {
-      usleep(100 * 1000);
+      ob_usleep(100 * 1000);
     }
   }
 }
@@ -557,7 +557,7 @@ int ObAiColumnWorker::process_table_(const ObTableSchema &table_schema)
         for (int64_t attempt = 0;
              OB_SUCC(ret) && !evaluated && attempt < max_attempts; ++attempt) {
           if (attempt > 0) {
-            usleep(50 * 1000);
+            ob_usleep(50 * 1000);
           }
           value_literal.reuse();
           int eval_ret = evaluate_ai_column_value(table_schema,

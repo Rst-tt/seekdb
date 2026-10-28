@@ -21,14 +21,73 @@
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "common/timezone/ob_time_convert.h"
-#include <glob.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
+#ifdef IGNORE
+#undef IGNORE
+#endif
+#ifdef S_NORMAL
+#undef S_NORMAL
+#endif
+#else
+#include <glob.h>
+#endif
 
 namespace oceanbase
 {
 using namespace common;
 namespace sql
 {
+
+int ObFileSqlUtils::expand_glob(const std::string &pattern, std::vector<std::string> &files)
+{
+  int ret = OB_SUCCESS;
+  files.clear();
+#ifdef _WIN32
+  const size_t separator = pattern.find_last_of("/\\");
+  const std::string directory = separator == std::string::npos
+                                ? std::string()
+                                : pattern.substr(0, separator + 1);
+  WIN32_FIND_DATAA find_data;
+  HANDLE handle = FindFirstFileA(pattern.c_str(), &find_data);
+  if (INVALID_HANDLE_VALUE == handle) {
+    ret = OB_FILE_NOT_EXIST;
+  } else {
+    do {
+      if (0 == (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        files.push_back(directory + find_data.cFileName);
+      }
+    } while (FindNextFileA(handle, &find_data));
+    if (ERROR_NO_MORE_FILES != GetLastError()) {
+      ret = OB_IO_ERROR;
+    }
+    FindClose(handle);
+  }
+#else
+  glob_t glob_result;
+  memset(&glob_result, 0, sizeof(glob_result));
+  const int glob_ret = glob(pattern.c_str(), 0, nullptr, &glob_result);
+  if (0 != glob_ret) {
+    ret = OB_FILE_NOT_EXIST;
+  } else {
+    files.reserve(glob_result.gl_pathc);
+    for (size_t i = 0; i < glob_result.gl_pathc; ++i) {
+      files.emplace_back(glob_result.gl_pathv[i]);
+    }
+  }
+  if (nullptr != glob_result.gl_pathv) {
+    globfree(&glob_result);
+  }
+#endif
+  if (OB_SUCCESS == ret && files.empty()) {
+    ret = OB_FILE_NOT_EXIST;
+  }
+  return ret;
+}
 
 OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_,
                     has_correlated_expr_, is_file_scan_, file_format_,
@@ -60,23 +119,10 @@ int ObFunctionTableOp::inner_open()
       } else if (static_cast<int64_t>(ObFileSqlFormat::PARQUET) == MY_SPEC.file_format_) {
         ret = parquet_reader_.open(path_datum->get_string(), options);
       } else if (static_cast<int64_t>(ObFileSqlFormat::GLOB) == MY_SPEC.file_format_) {
-        glob_files_.clear();
         glob_idx_ = 0;
-        glob_t glob_result;
-        memset(&glob_result, 0, sizeof(glob_result));
         std::string pattern(path_datum->get_string().ptr(),
                             path_datum->get_string().length());
-        int glob_ret = glob(pattern.c_str(), 0, nullptr, &glob_result);
-        if (glob_ret != 0) {
-          ret = OB_FILE_NOT_EXIST;
-        } else {
-          for (size_t i = 0; i < glob_result.gl_pathc; ++i) {
-            glob_files_.push_back(std::string(glob_result.gl_pathv[i]));
-          }
-        }
-        if (glob_result.gl_pathv != nullptr) {
-          globfree(&glob_result);
-        }
+        ret = ObFileSqlUtils::expand_glob(pattern, glob_files_);
       } else {
         ret = OB_NOT_SUPPORTED;
       }

@@ -247,6 +247,7 @@ cc_library(
         "//src/sql/optimizer:optimizer_internal_headers",
         "//src/sql/parser:parser_internal_headers",
         "//src/sql/resolver/prepare:resolver_prepare_internal_headers",
+        "@seekdb_3rd_headers//:rapidjson_headers",
     ],
     implementation_deps = _SQL_PRIVATE_HEADER_SHARE_DEPS,
     tags = ["manual"],

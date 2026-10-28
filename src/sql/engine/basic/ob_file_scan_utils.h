@@ -88,6 +88,8 @@ public:
     return ret;
   }
 
+  static int expand_glob(const std::string &pattern, std::vector<std::string> &files);
+
 private:
   enum class InferType : int8_t
   {
