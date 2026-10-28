@@ -38,6 +38,8 @@
 #include "sql/monitor/show_trace/ob_show_trace.h"
 #include "sql/optimizer/ob_optimizer.h"
 #include "share/rc/ob_server_runtime.h"
+#include <cctype>
+#include <strings.h>
 
 namespace oceanbase
 {
@@ -53,6 +55,29 @@ namespace sql
 
 const int64_t ObSql::max_error_length = 80;
 const int64_t ObSql::SQL_MEM_SIZE_LIMIT = 1024 * 1024 * 64;
+
+static bool sql_contains_file_table_function(const common::ObString &sql)
+{
+  static const char *FUNC_NAMES[] = {
+    "read_csv", "read_json", "read_ndjson", "read_parquet", "glob"
+  };
+  bool found = false;
+  for (int64_t i = 0; !found && i < sql.length(); ++i) {
+    for (int64_t j = 0; !found && j < static_cast<int64_t>(ARRAYSIZEOF(FUNC_NAMES)); ++j) {
+      const int64_t name_len = static_cast<int64_t>(strlen(FUNC_NAMES[j]));
+      if (i + name_len <= sql.length() &&
+          0 == strncasecmp(sql.ptr() + i, FUNC_NAMES[j], name_len)) {
+        bool left_ok = i == 0 || !(isalnum(static_cast<unsigned char>(sql.ptr()[i - 1])) ||
+                                   '_' == sql.ptr()[i - 1]);
+        bool right_ok = i + name_len == sql.length() ||
+                        !(isalnum(static_cast<unsigned char>(sql.ptr()[i + name_len])) ||
+                          '_' == sql.ptr()[i + name_len]);
+        found = left_ok && right_ok;
+      }
+    }
+  }
+  return found;
+}
 
 int ObSql::init(common::ObOptStatManager *opt_stat_mgr,
                 common::ObITabletScan *vt_partition_service,
@@ -3559,7 +3584,8 @@ OB_NOINLINE int ObSql::handle_physical_plan(const ObString &trimed_stmt,
   bool use_plan_cache = session.get_local_ob_enable_plan_cache();
   // record whether needs to do parameterization at this time,
   // if exact mode is on, not do parameterizaiton
-  bool is_enable_transform_tree = !session.get_enable_exact_mode();
+  bool is_enable_transform_tree = !session.get_enable_exact_mode() &&
+                                  !sql_contains_file_table_function(trimed_stmt);
   // Reset these two flags before reparsing to avoid issues with non-idempotency of these parameters after regenerating the plan due to previous plan cache lookup operations
   pc_ctx.not_param_index_.reset();
   pc_ctx.neg_param_index_.reset();

@@ -235,7 +235,8 @@ int count_child(ParseNode *root, void *malloc_pool, int *count)
       }
 
       if (OB_PARSER_SUCCESS != ret) {
-      } else if (T_LINK_NODE != tree->type_) {
+      } else if (T_LINK_NODE != tree->type_ ||
+                 (NULL != tree->str_value_ && tree->str_len_ > 0)) {
         *count += 1;
       } else if (tree->num_child_ <= 0) {
         // do nothing
@@ -291,7 +292,8 @@ int merge_child(ParseNode *node, void *malloc_pool, ParseNode *source_tree, int 
       }
       if (OB_PARSER_SUCCESS != ret) {
         // do nothing
-      } else if (T_LINK_NODE != tree->type_) {
+      } else if (T_LINK_NODE != tree->type_ ||
+                 (NULL != tree->str_value_ && tree->str_len_ > 0)) {
         if (OB_UNLIKELY(*index < 0 || *index >= node->num_child_)) {
           ret = OB_PARSER_ERR_UNEXPECTED;
           (void)fprintf(stderr, "ERROR invalid index: %d, num_child:%d\n tree: %d",
