@@ -18,6 +18,7 @@
 #include "sql/optimizer/ob_explain_log_plan.h"
 #include "sql/optimizer/ob_log_values.h"
 #include "sql/code_generator/ob_code_generator.h"
+#include "sql/resolver/dml/ob_select_stmt.h"
 
 using namespace oceanbase;
 using namespace sql;
@@ -37,6 +38,8 @@ int ObExplainLogPlan::generate_normal_raw_plan()
   int ret = OB_SUCCESS;
   if (OB_ISNULL(get_stmt()) || OB_UNLIKELY(!get_stmt()->is_explain_stmt())) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (static_cast<const ObExplainStmt *>(get_stmt())->is_describe()) {
+    ret = generate_describe_plan();
   } else {
     ObLogPlan *child_plan = NULL;
     const ObDMLStmt *child_stmt = NULL;
@@ -100,6 +103,136 @@ int ObExplainLogPlan::generate_normal_raw_plan()
     get_optimizer_context().get_all_exprs().reuse();
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(allocate_output_expr_for_values_op(*values_op))) {
+    } else {
+      get_optimizer_context().set_plan_type(ObPhyPlanType::OB_PHY_PLAN_LOCAL,
+                                            ObPhyPlanType::OB_PHY_PLAN_LOCAL,
+                                            false);
+    }
+  }
+  return ret;
+}
+
+const char *ObExplainLogPlan::get_describe_type_name(const ObObjType type)
+{
+  const char *name = "VARCHAR";
+  if (ObTinyIntType == type) {
+    name = "BOOLEAN";
+  } else if (ObIntType == type || ObUInt64Type == type || ObUInt32Type == type) {
+    name = "BIGINT";
+  } else if (ObFloatType == type || ObDoubleType == type || ObNumberType == type ||
+             ObUNumberType == type) {
+    name = "DOUBLE";
+  } else if (ObDateType == type) {
+    name = "DATE";
+  } else if (ObDateTimeType == type || ObTimestampType == type) {
+    name = "DATETIME";
+  } else if (ObNullType == type) {
+    name = "NULL";
+  } else if (ObJsonType == type) {
+    name = "JSON";
+  } else if (ob_is_string_tc(type) || ob_is_text_tc(type)) {
+    name = "VARCHAR";
+  }
+  return name;
+}
+
+int ObExplainLogPlan::fill_describe_rows(const ObDMLStmt &child_stmt,
+                                         ObLogValues &values_op)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!child_stmt.is_select_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    const ObSelectStmt &select_stmt = static_cast<const ObSelectStmt &>(child_stmt);
+    for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt.get_select_item_size(); ++i) {
+      const SelectItem &item = select_stmt.get_select_item(i);
+      const ObRawExpr *expr = item.expr_;
+      ObString column_name = item.alias_name_;
+      if (column_name.empty() && OB_NOT_NULL(expr) && expr->is_column_ref_expr()) {
+        column_name = static_cast<const ObColumnRefRawExpr *>(expr)->get_column_name();
+      }
+      if (column_name.empty()) {
+        column_name = ObString::make_string("column");
+      }
+      bool nullable = true;
+      const char *type_name = "VARCHAR";
+      if (OB_NOT_NULL(expr)) {
+        nullable = !expr->get_result_type().has_result_flag(NOT_NULL_FLAG);
+        type_name = get_describe_type_name(expr->get_data_type());
+      }
+      ObObj cells[DESCRIBE_COLUMN_COUNT];
+      cells[0].set_varchar(column_name);
+      cells[1].set_varchar(ObString::make_string(type_name));
+      cells[2].set_varchar(ObString::make_string(nullable ? "YES" : "NO"));
+      cells[3].set_null();
+      cells[4].set_null();
+      cells[5].set_null();
+      for (int64_t c = 0; c < 3; ++c) {
+        cells[c].set_collation_type(CS_TYPE_UTF8MB4_BIN);
+        cells[c].set_collation_level(CS_LEVEL_IMPLICIT);
+      }
+      ObNewRow row;
+      row.cells_ = cells;
+      row.count_ = DESCRIBE_COLUMN_COUNT;
+      if (OB_FAIL(values_op.add_row(row))) {
+      }
+    }
+  }
+  return ret;
+}
+
+int ObExplainLogPlan::allocate_describe_output_expr(ObLogicalOperator &values_op)
+{
+  int ret = OB_SUCCESS;
+  static const char *COLUMN_NAMES[DESCRIBE_COLUMN_COUNT] = {
+    "column_name", "column_type", "null", "key", "default", "extra"
+  };
+  for (int64_t i = 0; OB_SUCC(ret) && i < DESCRIBE_COLUMN_COUNT; ++i) {
+    ObConstRawExpr *output = NULL;
+    if (OB_FAIL(optimizer_context_.get_expr_factory().create_raw_expr(T_VARCHAR, output))) {
+    } else if (OB_ISNULL(output)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      ObObj value;
+      value.set_varchar(ObString::make_string(" "));
+      value.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      output->set_value(value);
+      output->set_alias_column_name(ObString::make_string(COLUMN_NAMES[i]));
+      if (OB_FAIL(output->formalize(optimizer_context_.get_session_info()))) {
+      } else if (OB_FAIL(values_op.get_output_exprs().push_back(output))) {
+      } else if (OB_FAIL(get_optimizer_context().get_all_exprs().append(output))) {
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    values_op.set_branch_id(0);
+    values_op.set_id(0);
+    values_op.set_op_id(0);
+  }
+  return ret;
+}
+
+int ObExplainLogPlan::generate_describe_plan()
+{
+  int ret = OB_SUCCESS;
+  const ObExplainStmt *explain_stmt = static_cast<const ObExplainStmt *>(get_stmt());
+  const ObDMLStmt *child_stmt = NULL;
+  ObLogicalOperator *top = NULL;
+  ObLogValues *values_op = NULL;
+  if (OB_ISNULL(explain_stmt) ||
+      OB_ISNULL(child_stmt = explain_stmt->get_explain_query_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(allocate_values_as_top(top))) {
+  } else if (OB_ISNULL(top) || OB_UNLIKELY(LOG_VALUES != top->get_type())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (FALSE_IT(values_op = static_cast<ObLogValues *>(top))) {
+  } else if (OB_FAIL(fill_describe_rows(*child_stmt, *values_op))) {
+  } else {
+    set_plan_root(top);
+    top->mark_is_plan_root();
+    set_max_op_id(1);
+    get_optimizer_context().get_all_exprs().reuse();
+    if (OB_FAIL(allocate_describe_output_expr(*values_op))) {
     } else {
       get_optimizer_context().set_plan_type(ObPhyPlanType::OB_PHY_PLAN_LOCAL,
                                             ObPhyPlanType::OB_PHY_PLAN_LOCAL,

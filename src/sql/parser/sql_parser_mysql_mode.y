@@ -41,11 +41,12 @@
 #include "../../../src/sql/parser/sql_parser_base.h"
 
 #define GEN_EXPLAN_STMT(no_use, explain_stmt, explain_type, display_type, stmt, into_table, set_statement_id) \
-  (void)(no_use); \
   ParseNode *type_node = NULL; \
   ParseNode *display_node = NULL; \
   if (0 != explain_type) { \
     malloc_terminal_node(type_node, result->malloc_pool_, explain_type); \
+  } else if (0 != no_use[0]) { \
+    malloc_terminal_node(type_node, result->malloc_pool_, T_DESCRIBE); \
   } \
   if (0 != display_type) { \
     malloc_terminal_node(display_node, result->malloc_pool_, display_type); \
@@ -385,7 +386,8 @@ END_P SET_VAR DELIMITER
 %type <node> date_unit date_params timestamp_params
 %type <node> drop_table_stmt table_list drop_view_stmt table_or_tables
 %type <node> explain_stmt explainable_stmt format_name kill_stmt create_outline_stmt alter_outline_stmt drop_outline_stmt opt_outline_target
-%type <node> expr_list expr expr_const conf_const simple_expr simple_expr_list expr_or_default bit_expr bool_pri predicate explain_or_desc pl_expr_stmt
+%type <node> expr_list expr expr_const conf_const simple_expr simple_expr_list expr_or_default bit_expr bool_pri predicate pl_expr_stmt
+%type <ival> explain_or_desc
 %type <node> column_ref multi_delete_table
 %type <node> case_expr func_expr in_expr sub_query_flag search_expr
 %type <node> case_arg when_clause_list when_clause case_default
@@ -515,6 +517,7 @@ END_P SET_VAR DELIMITER
 %type <node> vector_similarity_expr vector_similarity_metric
 %type <node> algorithm_opt lock_opt
 %type <node> flush_privileges_stmt opt_flush_privileges_scope
+%type <node> copy_stmt copy_option copy_option_name copy_option_list copy_option_value opt_copy_options opt_equal_mark_for_copy
 %start sql_stmt
 %%
 ////////////////////////////////////////////////////////////////
@@ -557,6 +560,7 @@ opt_end_p:
 /* only preparable statement will set question mark size */
 stmt:
     select_stmt             { $$ = $1; question_mark_issue($$, result); }
+  | copy_stmt               { $$ = $1; question_mark_issue($$, result); }
   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
   | create_table_stmt       {
     $$ = $1;
@@ -12293,6 +12297,77 @@ $$ = NULL;
 
 /*****************************************************************************
  *
+ *	copy grammar
+ *
+ *****************************************************************************/
+copy_stmt:
+COPY '(' select_no_parens ')' TO STRING_VALUE opt_copy_options
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY, 3, $3, $6, $7);
+}
+| COPY relation_factor TO STRING_VALUE opt_copy_options
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY, 3, $2, $4, $5);
+}
+;
+
+opt_copy_options:
+/*empty*/
+{ $$ = NULL; }
+| '(' copy_option_list ')'
+{ $$ = $2; }
+;
+
+copy_option_list:
+copy_option
+{ $$ = $1; }
+| copy_option_list ',' copy_option
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
+}
+;
+
+copy_option:
+copy_option_name
+{ $$ = $1; }
+| copy_option_name opt_equal_mark_for_copy copy_option_value
+{
+  (void)($2);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_OP_EQ, 2, $1, $3);
+}
+;
+
+copy_option_name:
+NAME_OB
+{ $$ = $1; }
+| FORMAT
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_IDENT);
+  $$->str_value_ = (char *)"format";
+  $$->str_len_ = 6;
+}
+;
+
+opt_equal_mark_for_copy:
+/*empty*/
+{ $$ = NULL; }
+| '='
+{ $$ = NULL; }
+;
+
+copy_option_value:
+NAME_OB
+{ $$ = $1; }
+| STRING_VALUE
+{ $$ = $1; }
+| BOOL_VALUE
+{ $$ = $1; }
+| number_literal
+{ $$ = $1; }
+;
+
+/*****************************************************************************
+ *
  *	explain grammar
  *
  *****************************************************************************/
@@ -12345,9 +12420,9 @@ explain_or_desc relation_factor opt_desc_column_option
 ;
 
 explain_or_desc:
-EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
-| DESC  {$$ = NULL;}
+EXPLAIN {$$[0] = 0;}
+| DESCRIBE {$$[0] = 1;}
+| DESC  {$$[0] = 1;}
 ;
 
 explainable_stmt:

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstdint>
@@ -192,7 +193,7 @@ private:
 
   static bool is_datetime_(const std::string &value)
   {
-    if (value.size() != 19 || value[10] != ' ' ||
+    if (value.size() != 19 || (value[10] != ' ' && value[10] != 'T') ||
         value[13] != ':' || value[16] != ':' ||
         !is_valid_date_part_(value, 0)) {
       return false;
@@ -267,6 +268,37 @@ private:
     }
   }
 
+  static bool file_column_name_equal_(const std::string &lhs,
+                                      const std::string &rhs)
+  {
+    bool equal = lhs.size() == rhs.size();
+    for (size_t i = 0; equal && i < lhs.size(); ++i) {
+      equal = std::tolower(static_cast<unsigned char>(lhs[i])) ==
+              std::tolower(static_cast<unsigned char>(rhs[i]));
+    }
+    return equal;
+  }
+
+  static void make_unique_csv_column_names_(std::vector<std::string> &names)
+  {
+    for (size_t i = 0; i < names.size(); ++i) {
+      std::string base = names[i];
+      std::string candidate = base;
+      int64_t suffix = 2;
+      bool duplicated = true;
+      while (duplicated) {
+        duplicated = false;
+        for (size_t j = 0; !duplicated && j < i; ++j) {
+          duplicated = file_column_name_equal_(names[j], candidate);
+        }
+        if (duplicated) {
+          candidate = base + "__" + std::to_string(suffix++);
+        }
+      }
+      names[i] = candidate;
+    }
+  }
+
   static int infer_csv_schema_(common::ObIAllocator &allocator,
                                const common::ObString &path,
                                const ObFileSqlOptions &options,
@@ -316,8 +348,12 @@ private:
     for (int64_t i = 0; i < column_count; ++i) {
       names[i] = options.header_ ? records[0][i] : "c" + std::to_string(i + 1);
     }
+    make_unique_csv_column_names_(names);
 
     const int64_t first_data_row = options.header_ ? 1 : 0;
+    std::vector<bool> nullable(column_count, 0 < first_data_row &&
+                                             first_data_row >=
+                                                 static_cast<int64_t>(records.size()));
     for (int64_t r = first_data_row; OB_SUCC(ret) && r < static_cast<int64_t>(records.size()); ++r) {
       if (records[r].size() != static_cast<size_t>(column_count)) {
         ret = common::OB_INVALID_DATA;
@@ -328,7 +364,9 @@ private:
         const std::string &value = records[r][c];
         const bool is_null = !quoted_records[r][c] &&
                              (value.empty() || is_null_value_(value, options.null_text_));
-        if (!is_null) {
+        if (is_null) {
+          nullable[c] = true;
+        } else {
           types[c] = merge_type_(types[c], infer_type_(value, options.null_text_));
         }
       }
@@ -341,7 +379,7 @@ private:
       } else {
         column.name_ = name;
         column.type_ = to_obj_type_(types[c]);
-        column.nullable_ = true;
+        column.nullable_ = nullable[c];
         column.precision_ = -1;
         column.scale_ = -1;
         if (OB_FAIL(columns.push_back(column))) {

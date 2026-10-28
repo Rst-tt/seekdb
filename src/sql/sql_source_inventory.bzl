@@ -1489,6 +1489,7 @@ SQL_UNITY_GROUPS = [
         srcs = [
             "src/sql/resolver/dml/ob_aggr_expr_push_up_analyzer.cpp",
             "src/sql/resolver/dml/ob_column_namespace_checker.cpp",
+            "src/sql/resolver/dml/ob_copy_resolver.cpp",
             "src/sql/resolver/dml/ob_default_value_utils.cpp",
             "src/sql/resolver/dml/ob_del_upd_resolver.cpp",
             "src/sql/resolver/dml/ob_del_upd_stmt.cpp",

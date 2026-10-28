@@ -151,6 +151,81 @@ int get_static_int_value(const ObRawExpr *expr, int64_t &value)
   return ret;
 }
 
+int get_static_string_value(const ObRawExpr *expr, common::ObString &value)
+{
+  int ret = common::OB_SUCCESS;
+  if (OB_ISNULL(expr) || !expr->is_const_raw_expr()) {
+    ret = common::OB_NOT_SUPPORTED;
+  } else {
+    const ObConstRawExpr *const_expr = static_cast<const ObConstRawExpr *>(expr);
+    const common::ObObj &const_value = const_expr->get_value();
+    const common::ObObj &param = const_expr->get_param();
+    const common::ObObj &actual_value = const_value.is_unknown() ? param : const_value;
+    if (actual_value.is_string_type()) {
+      value = actual_value.get_string();
+    } else {
+      ret = common::OB_INVALID_ARGUMENT;
+    }
+  }
+  return ret;
+}
+
+bool is_file_format_value(const ObFileSqlFormat file_format, const common::ObString &value)
+{
+  bool is_valid = false;
+  if (ObFileSqlFormat::CSV == file_format) {
+    is_valid = 0 == value.case_compare("csv");
+  } else if (ObFileSqlFormat::JSONL == file_format ||
+             ObFileSqlFormat::NDJSON == file_format) {
+    is_valid = 0 == value.case_compare("newline_delimited") ||
+               0 == value.case_compare("ndjson") ||
+               0 == value.case_compare("jsonl");
+  } else if (ObFileSqlFormat::PARQUET == file_format) {
+    is_valid = 0 == value.case_compare("parquet");
+  }
+  return is_valid;
+}
+
+bool get_bare_identifier(const ParseNode *node, common::ObString &name)
+{
+  bool found = false;
+  const ParseNode *current = node;
+  while (OB_NOT_NULL(current) && 1 == current->num_child_ &&
+         OB_NOT_NULL(current->children_)) {
+    current = current->children_[0];
+  }
+  if (OB_NOT_NULL(current)) {
+    if (T_COLUMN_REF == current->type_ && 3 == current->num_child_ &&
+        OB_NOT_NULL(current->children_) &&
+        OB_ISNULL(current->children_[0]) && OB_ISNULL(current->children_[1]) &&
+        OB_NOT_NULL(current->children_[2]) &&
+        OB_NOT_NULL(current->children_[2]->str_value_) &&
+        current->children_[2]->str_len_ > 0) {
+      name.assign_ptr(current->children_[2]->str_value_,
+                      current->children_[2]->str_len_);
+      found = true;
+    } else if (OB_NOT_NULL(current->str_value_) && current->str_len_ > 0 &&
+               (T_IDENT == current->type_ || T_RELATION_FACTOR == current->type_)) {
+      name.assign_ptr(current->str_value_, current->str_len_);
+      found = true;
+    }
+  }
+  return found;
+}
+
+bool get_named_argument(ParseNode *node, common::ObString &name, ParseNode *&value)
+{
+  bool found = false;
+  value = NULL;
+  if (OB_NOT_NULL(node) && T_OP_EQ == node->type_ && 2 == node->num_child_ &&
+      OB_NOT_NULL(node->children_) &&
+      get_bare_identifier(node->children_[0], name) && !name.empty()) {
+    value = node->children_[1];
+    found = true;
+  }
+  return found;
+}
+
 } // namespace
 
 ObDMLResolver::ObDMLResolver(ObResolverParams &params)
@@ -4063,26 +4138,27 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
       ObRawExpr *header_expr = NULL;
       ObRawExpr *delimiter_expr = NULL;
       ObRawExpr *quote_expr = NULL;
+      bool positional_format = false;
       ParseNode *args_node = call_node->num_child_ > 1 ? call_node->children_[1] : NULL;
       if (OB_NOT_NULL(args_node)) {
         const int64_t arg_count = args_node->type_ == T_EXPR_LIST ? args_node->num_child_ : 1;
+        int64_t positional_index = 0;
         for (int64_t i = 0; OB_SUCC(ret) && i < arg_count; ++i) {
           ParseNode *arg_node = args_node->type_ == T_EXPR_LIST ? args_node->children_[i] : args_node;
           ParseNode *value_node = arg_node;
           ObString arg_name;
           bool is_named = false;
-          if (OB_NOT_NULL(arg_node) && arg_node->num_child_ == 1 &&
-              OB_NOT_NULL(arg_node->str_value_) && arg_node->str_len_ > 0) {
+          if (get_named_argument(arg_node, arg_name, value_node)) {
             is_named = true;
-            arg_name.assign_ptr(arg_node->str_value_, arg_node->str_len_);
-            value_node = arg_node->children_[0];
+          } else {
+            value_node = arg_node;
           }
           ObRawExpr *value_expr = NULL;
           if (OB_ISNULL(value_node)) {
             ret = OB_INVALID_ARGUMENT;
           } else if (OB_FAIL(resolve_sql_expr(*value_node, value_expr))) {
-          } else if (!is_named && OB_ISNULL(path_expr)) {
-            path_expr = value_expr;
+            LOG_WARN("failed to resolve file sql argument", K(ret), K(i),
+                     K(value_node->type_));
           } else if (is_named && 0 == arg_name.case_compare("header")) {
             header_expr = value_expr;
           } else if (is_named && (0 == arg_name.case_compare("delimiter") ||
@@ -4099,15 +4175,39 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
               ret = OB_NOT_SUPPORTED;
               LOG_USER_ERROR(OB_NOT_SUPPORTED, "only full-file schema inference is supported");
             }
-          } else if (!is_named && OB_ISNULL(header_expr)) {
-            header_expr = value_expr;
-          } else if (!is_named && OB_ISNULL(delimiter_expr)) {
+          } else if (is_named && 0 == arg_name.case_compare("format")) {
+            ObString format_value;
+            if (OB_FAIL(get_static_string_value(value_expr, format_value))) {
+              ret = OB_ERR_PARSE_SQL;
+            } else if (!is_file_format_value(file_format, format_value)) {
+              ret = OB_ERR_PARSE_SQL;
+            }
+          } else if (!is_named && 0 == positional_index) {
+            path_expr = value_expr;
+          } else if (!is_named && 1 == positional_index) {
+            ObString format_value;
+            int64_t legacy_header_option = 0;
+            if (OB_SUCC(get_static_string_value(value_expr, format_value))) {
+              if (is_file_format_value(file_format, format_value)) {
+                positional_format = true;
+              } else {
+                ret = OB_ERR_PARSE_SQL;
+              }
+            } else if (OB_SUCC(get_static_int_value(value_expr, legacy_header_option))) {
+              header_expr = value_expr;
+            } else {
+              ret = OB_ERR_PARSE_SQL;
+            }
+          } else if (!is_named && !positional_format && OB_ISNULL(delimiter_expr)) {
             delimiter_expr = value_expr;
-          } else if (!is_named && OB_ISNULL(quote_expr)) {
+          } else if (!is_named && !positional_format && OB_ISNULL(quote_expr)) {
             quote_expr = value_expr;
           } else {
             ret = OB_INVALID_ARGUMENT;
             LOG_USER_ERROR(OB_INVALID_ARGUMENT, "unsupported file table argument");
+          }
+          if (OB_SUCC(ret) && !is_named) {
+            ++positional_index;
           }
         }
       }
@@ -4350,11 +4450,19 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
               accuracy.set_length(ObAccuracy::DDL_DEFAULT_ACCURACY[file_col.type_].get_length());
             } else {
               accuracy.set_accuracy(ObAccuracy::DDL_DEFAULT_ACCURACY[file_col.type_]);
+              if (ObDateType == file_col.type_ || ObDateTimeType == file_col.type_ ||
+                  ObTimestampType == file_col.type_) {
+                accuracy.set_scale(0);
+              }
             }
             if (OB_FAIL(resolve_function_table_column_item(*item, meta, accuracy,
                                                             file_col.name_,
                                                             OB_APP_MIN_COLUMN_ID + i,
                                                             col_item))) {
+            } else if (OB_ISNULL(col_item) || OB_ISNULL(col_item->expr_)) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (!file_col.nullable_) {
+              col_item->expr_->set_result_flag(NOT_NULL_FLAG);
             }
           }
         }

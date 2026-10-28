@@ -25,6 +25,7 @@
 #include "sql/plan_cache/ob_pcv_set.h"
 #include "sql/ob_sql_init.h"
 #include "sql/resolver/ob_resolver.h"
+#include "sql/resolver/ddl/ob_explain_stmt.h"
 #include "sql/resolver/cmd/ob_variable_set_stmt.h"
 #include "sql/resolver/cmd/ob_call_procedure_stmt.h"
 #include "sql/resolver/cmd/ob_anonymous_block_stmt.h"
@@ -295,19 +296,32 @@ int ObSql::fill_result_set(ObResultSet &result_set,
       break;
     }
     case stmt::T_EXPLAIN: {
-      ObString tname = ObString::make_string("explain_table");
-      ObString cname = ObString::make_string("Query Plan");
-      field.tname_ = tname;
-      field.org_tname_ = tname;
-      field.cname_ = cname;
-      field.org_cname_ = cname;
-      field.type_.set_type(ObVarcharType);
-      field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
-      field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
-      field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
-      field.type_.set_varchar(type_name);
-      if (OB_FAIL(result_set.reserve_field_columns(1))) {
-      } else if (OB_FAIL(result_set.add_field_column(field))) {
+      static const char *DESCRIBE_COLUMN_NAMES[] = {
+        "column_name", "column_type", "null", "key", "default", "extra"
+      };
+      ObExplainStmt *explain_stmt = static_cast<ObExplainStmt *>(&basic_stmt);
+      const bool is_describe = explain_stmt->is_describe();
+      const int64_t field_count = is_describe ? 6 : 1;
+      ObString tname = ObString::make_string(is_describe ? "describe_table" : "explain_table");
+      if (OB_FAIL(result_set.reserve_field_columns(field_count))) {
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < field_count; ++i) {
+        ObString cname = is_describe ? ObString::make_string(DESCRIBE_COLUMN_NAMES[i])
+                                     : ObString::make_string("Query Plan");
+        field.tname_ = tname;
+        field.org_tname_ = tname;
+        field.cname_ = cname;
+        field.org_cname_ = cname;
+        field.type_.set_type(ObVarcharType);
+        field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
+        field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+        field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
+        field.type_.set_varchar(type_name);
+        if (OB_FAIL(result_set.add_field_column(field))) {
+        } else {
+          field.cname_.assign(NULL, 0);
+          field.org_cname_.assign(NULL, 0);
+        }
       }
       break;
     }
