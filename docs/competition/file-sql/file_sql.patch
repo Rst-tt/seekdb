@@ -1,0 +1,5059 @@
+diff --git a/src/objit/include/objit/common/ob_item_type.h b/src/objit/include/objit/common/ob_item_type.h
+index 5d911190c..5fcfd4b2b 100644
+--- a/src/objit/include/objit/common/ob_item_type.h
++++ b/src/objit/include/objit/common/ob_item_type.h
+@@ -2274,6 +2274,9 @@ typedef enum ObItemType
+   T_FORK_DATABASE = 4917,
+   T_DIFF_TABLE = 4918,
+   T_MERGE_TABLE = 4919,
++  T_FILE_TABLE_EXPRESSION = 4921,
++  T_COPY = 4922,
++  T_DESCRIBE = 4923,
+   T_MAX //Attention: add a new type before T_MAX
+ } ObItemType;
+ 
+diff --git a/src/query/api/query/parser/ob_item_type.h b/src/query/api/query/parser/ob_item_type.h
+index 791ab8b53..5992b8eaa 100644
+--- a/src/query/api/query/parser/ob_item_type.h
++++ b/src/query/api/query/parser/ob_item_type.h
+@@ -2275,6 +2275,9 @@ typedef enum ObItemType
+   T_DIFF_TABLE = 4918,
+   T_MERGE_TABLE = 4919,
+   T_FLUSH_PRIVILEGES = 4920,
++  T_FILE_TABLE_EXPRESSION = 4921,
++  T_COPY = 4922,
++  T_DESCRIBE = 4923,
+   T_MAX //Attention: add a new type before T_MAX
+ } ObItemType;
+ 
+diff --git a/src/share/system_variable/ob_sys_var_class_type.h b/src/share/system_variable/ob_sys_var_class_type.h
+index ed8d26e91..5263502b5 100644
+--- a/src/share/system_variable/ob_sys_var_class_type.h
++++ b/src/share/system_variable/ob_sys_var_class_type.h
+@@ -744,6 +744,7 @@ enum ObSysVarClassType
+   SYS_VAR_OB_HNSW_EXTRA_INFO_MAX_SIZE = 10751,
+   SYS_VAR__PUSH_JOIN_PREDICATE = 10752,
+   SYS_VAR_OB_SPARSE_DROP_RATIO_SEARCH = 10753,
++  SYS_VAR_ENABLE_FILE_SQL = 10754,
+ };
+ 
+ }
+diff --git a/src/share/system_variable/ob_sys_var_meta.cpp b/src/share/system_variable/ob_sys_var_meta.cpp
+index 4a380d3fd..7c268bc4b 100644
+--- a/src/share/system_variable/ob_sys_var_meta.cpp
++++ b/src/share/system_variable/ob_sys_var_meta.cpp
+@@ -108,6 +108,7 @@ const char *ObSysVarMeta::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
+   "disabled_storage_engines",
+   "disconnect_on_expired_password",
+   "div_precision_increment",
++  "enable_file_sql",
+   "enable_optimizer_rowgoal",
+   "enforce_gtid_consistency",
+   "eq_range_index_dive_limit",
+@@ -745,7 +746,7 @@ const char *ObSysVarMeta::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
+   "version_tokens_session",
+   "version_tokens_session_number",
+   "wait_timeout",
+-  "warning_count"
++  "warning_count",
+ };
+ 
+ const ObSysVarClassType ObSysVarMeta::SYS_VAR_IDS_SORTED_BY_NAME[] = {
+@@ -830,6 +831,7 @@ const ObSysVarClassType ObSysVarMeta::SYS_VAR_IDS_SORTED_BY_NAME[] = {
+   SYS_VAR_DISABLED_STORAGE_ENGINES,
+   SYS_VAR_DISCONNECT_ON_EXPIRED_PASSWORD,
+   SYS_VAR_DIV_PRECISION_INCREMENT,
++  SYS_VAR_ENABLE_FILE_SQL,
+   SYS_VAR_ENABLE_OPTIMIZER_ROWGOAL,
+   SYS_VAR_ENFORCE_GTID_CONSISTENCY,
+   SYS_VAR_EQ_RANGE_INDEX_DIVE_LIMIT,
+@@ -1467,7 +1469,7 @@ const ObSysVarClassType ObSysVarMeta::SYS_VAR_IDS_SORTED_BY_NAME[] = {
+   SYS_VAR_VERSION_TOKENS_SESSION,
+   SYS_VAR_VERSION_TOKENS_SESSION_NUMBER,
+   SYS_VAR_WAIT_TIMEOUT,
+-  SYS_VAR_WARNING_COUNT
++  SYS_VAR_WARNING_COUNT,
+ };
+ 
+ const char *ObSysVarMeta::SYS_VAR_NAMES_SORTED_BY_ID[] = {
+@@ -2189,7 +2191,8 @@ const char *ObSysVarMeta::SYS_VAR_NAMES_SORTED_BY_ID[] = {
+   "ob_ivf_nprobes",
+   "ob_hnsw_extra_info_max_size",
+   "_push_join_predicate",
+-  "ob_sparse_drop_ratio_search"
++  "ob_sparse_drop_ratio_search",
++  "enable_file_sql",
+ };
+ 
+ bool ObSysVarMeta::sys_var_name_case_cmp(const char *name1, const ObString &name2)
+diff --git a/src/share/system_variable/ob_sys_var_meta.h b/src/share/system_variable/ob_sys_var_meta.h
+index ce2c3f5ff..b571a3133 100644
+--- a/src/share/system_variable/ob_sys_var_meta.h
++++ b/src/share/system_variable/ob_sys_var_meta.h
+@@ -29,7 +29,7 @@ class ObSysVarMeta
+ {
+ public:
+   const static int64_t MYSQL_SYS_VARS_COUNT = 99;
+-  const static int64_t OB_SYS_VARS_COUNT = 620;
++  const static int64_t OB_SYS_VARS_COUNT = 621;
+   const static int64_t ALL_SYS_VARS_COUNT = MYSQL_SYS_VARS_COUNT + OB_SYS_VARS_COUNT;
+   const static int64_t INVALID_MAX_READ_STALE_TIME = -1;
+ 
+diff --git a/src/share/system_variable/ob_system_variable_alias.h b/src/share/system_variable/ob_system_variable_alias.h
+index 7f9eee9b5..4119540bd 100644
+--- a/src/share/system_variable/ob_system_variable_alias.h
++++ b/src/share/system_variable/ob_system_variable_alias.h
+@@ -154,6 +154,7 @@ namespace share
+   static const char* const OB_SV_DEFAULT_PASSWORD_LIFETIME = "default_password_lifetime";
+   static const char* const OB_SV__ENABLE_PARALLEL_DML = "_enable_parallel_dml";
+   static const char* const OB_SV_SECURE_FILE_PRIV = "secure_file_priv";
++  static const char* const OB_SV_ENABLE_FILE_SQL = "enable_file_sql";
+   static const char* const OB_SV__ENABLE_PARALLEL_QUERY = "_enable_parallel_query";
+   static const char* const OB_SV__FORCE_PARALLEL_QUERY_DOP = "_force_parallel_query_dop";
+   static const char* const OB_SV__FORCE_PARALLEL_DML_DOP = "_force_parallel_dml_dop";
+diff --git a/src/share/system_variable/ob_system_variable_init.cpp b/src/share/system_variable/ob_system_variable_init.cpp
+index 4d6d72f06..3a7e6f34e 100644
+--- a/src/share/system_variable/ob_system_variable_init.cpp
++++ b/src/share/system_variable/ob_system_variable_init.cpp
+@@ -9911,13 +9911,26 @@ static struct VarsInit{
+     ObSysVars[718].alias_ = "OB_SV_SPARSE_DROP_RATIO_SEARCH" ;
+     }();
+ 
++    [&] (){
++      ObSysVars[719].default_value_ = "0" ;
++      ObSysVars[719].info_ = "enable read_csv/read_json/read_ndjson/read_parquet/glob table functions" ;
++      ObSysVars[719].name_ = "enable_file_sql" ;
++      ObSysVars[719].data_type_ = ObIntType ;
++      ObSysVars[719].flags_ = ObSysVarFlag::GLOBAL_SCOPE | ObSysVarFlag::SESSION_SCOPE | ObSysVarFlag::NEED_SERIALIZE | ObSysVarFlag::INFLUENCE_PLAN ;
++      ObSysVars[719].id_ = SYS_VAR_ENABLE_FILE_SQL ;
++      cur_max_var_id = MAX(cur_max_var_id, static_cast<int64_t>(SYS_VAR_ENABLE_FILE_SQL)) ;
++      ObSysVarsIdToArrayIdx[SYS_VAR_ENABLE_FILE_SQL] = 719 ;
++      ObSysVars[719].base_value_ = "0" ;
++    ObSysVars[719].alias_ = "OB_SV_ENABLE_FILE_SQL" ;
++    }();
++
+     if (cur_max_var_id >= ObSysVarMeta::OB_MAX_SYS_VAR_ID) {
+       HasInvalidSysVar = true;
+     }
+   }
+ }vars_init;
+ 
+-static int64_t var_amount = 719;
++static int64_t var_amount = 720;
+ 
+ int64_t ObSysVariables::get_all_sys_var_count(){ return ObSysVarMeta::ALL_SYS_VARS_COUNT;}
+ ObSysVarClassType ObSysVariables::get_sys_var_id(int64_t i){ return ObSysVars[i].id_;}
+diff --git a/src/share/system_variable/ob_system_variable_init.json b/src/share/system_variable/ob_system_variable_init.json
+index 80f1b0122..27ec6fa08 100644
+--- a/src/share/system_variable/ob_system_variable_init.json
++++ b/src/share/system_variable/ob_system_variable_init.json
+@@ -756,6 +756,19 @@
+     "background_cn": "",
+     "ref_url": ""
+   },
++  "enable_file_sql": {
++    "id": 10754,
++    "name": "enable_file_sql",
++    "default_value": "0",
++    "base_value": "0",
++    "data_type": "bool",
++    "info": "enable read_csv/read_json/read_ndjson/read_parquet/glob table functions",
++    "flags": "GLOBAL | SESSION | NEED_SERIALIZE | INFLUENCE_PLAN",
++    "publish_version": "",
++    "info_cn": "",
++    "background_cn": "",
++    "ref_url": ""
++  },
+   "concurrent_insert": {
+     "id": 49,
+     "name": "concurrent_insert",
+diff --git a/src/sql/engine/basic/ob_select_into_op.cpp b/src/sql/engine/basic/ob_select_into_op.cpp
+index eaafba60a..f444aa25a 100644
+--- a/src/sql/engine/basic/ob_select_into_op.cpp
++++ b/src/sql/engine/basic/ob_select_into_op.cpp
+@@ -38,7 +38,7 @@ OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
+ OB_SERIALIZE_MEMBER((ObSelectIntoSpec, ObOpSpec), into_type_, user_vars_, outfile_name_,
+     field_str_, line_str_, closed_cht_, is_optional_, select_exprs_, is_single_, max_file_size_,
+     escaped_cht_, cs_type_, parallel_, buffer_size_, is_overwrite_,
+-    external_properties_);
++    external_properties_, has_header_, header_str_);
+ 
+ 
+ int ObSelectIntoOp::inner_open()
+@@ -200,6 +200,14 @@ int ObSelectIntoOp::inner_get_next_row()
+       && T_INTO_VARIABLES != into_type
+       && OB_FAIL(create_the_only_data_writer(data_writer))) {
+   }
++  if (OB_SUCC(ret) && !header_written_ && NULL != data_writer
++      && T_INTO_OUTFILE == into_type
++      && ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_) {
++    if (OB_FAIL(write_csv_header(*static_cast<ObCsvFileWriter *>(data_writer)))) {
++    } else {
++      header_written_ = true;
++    }
++  }
+   while (OB_SUCC(ret) && row_count < top_limit_cnt_) {
+     clear_evaluated_flag();
+     if (OB_FAIL(child_->get_next_row())) {
+@@ -256,6 +264,14 @@ int ObSelectIntoOp::inner_get_next_batch(const int64_t max_row_cnt)
+     }
+   }
+ 
++  if (OB_SUCC(ret) && !header_written_ && NULL != data_writer
++      && T_INTO_OUTFILE == into_type
++      && ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_) {
++    if (OB_FAIL(write_csv_header(*static_cast<ObCsvFileWriter *>(data_writer)))) {
++    } else {
++      header_written_ = true;
++    }
++  }
+   if (0 == top_limit_cnt_) {
+     brs_.size_ = 0;
+     brs_.end_ = true;
+@@ -943,6 +959,36 @@ int ObSelectIntoOp::print_field(const ObObj &obj, ObCsvFileWriter &data_writer)
+   return ret;
+ }
+ 
++int ObSelectIntoOp::write_csv_header(ObCsvFileWriter &data_writer)
++{
++  int ret = OB_SUCCESS;
++  const ObString &header = MY_SPEC.header_str_;
++  if (!MY_SPEC.has_header_ || 0 == header.length()) {
++    // nothing to do
++  } else {
++    int64_t start = 0;
++    while (OB_SUCC(ret) && start <= header.length()) {
++      int64_t end = start;
++      while (end < header.length() && '\x01' != header.ptr()[end]) {
++        ++end;
++      }
++      ObString name(static_cast<int32_t>(end - start), header.ptr() + start);
++      ObObj obj;
++      obj.set_varchar(name);
++      obj.set_collation_type(cs_type_);
++      obj.set_collation_level(CS_LEVEL_COERCIBLE);
++      if (OB_FAIL(write_obj_to_file(obj, data_writer, false))) {
++      } else if (end < header.length() && OB_FAIL(write_obj_to_file(field_str_, data_writer, false))) {
++      } else {
++        start = end + 1;
++      }
++    }
++    if (OB_SUCC(ret) && OB_FAIL(write_obj_to_file(line_str_, data_writer, false))) {
++    }
++  }
++  return ret;
++}
++
+ int ObSelectIntoOp::into_outfile(ObExternalFileWriter *data_writer)
+ {
+   int ret = OB_SUCCESS;
+diff --git a/src/sql/engine/basic/ob_select_into_op.h b/src/sql/engine/basic/ob_select_into_op.h
+index 81eb850b7..1673af76a 100644
+--- a/src/sql/engine/basic/ob_select_into_op.h
++++ b/src/sql/engine/basic/ob_select_into_op.h
+@@ -71,7 +71,9 @@ public:
+       parallel_(1),
+       buffer_size_(DEFAULT_BUFFER_SIZE),
+       is_overwrite_(false),
+-      external_properties_(alloc)
++      external_properties_(alloc),
++      has_header_(false),
++      header_str_()
+   {
+   }
+ 
+@@ -91,6 +93,8 @@ public:
+   int64_t buffer_size_;
+   bool is_overwrite_;
+   ObExternalFileFormat::StringData external_properties_;
++  bool has_header_;
++  common::ObString header_str_;
+   static const int64_t DEFAULT_MAX_FILE_SIZE = 256LL * 1024 * 1024;
+   static const int64_t DEFAULT_BUFFER_SIZE = 1LL * 1024 * 1024;
+ };
+@@ -126,7 +130,8 @@ public:
+       external_properties_(),
+       format_type_(ObExternalFileFormat::FormatType::CSV_FORMAT),
+       block_id_(0),
+-      need_commit_(true)
++      need_commit_(true),
++      header_written_(false)
+   {
+   }
+ 
+@@ -211,6 +216,7 @@ private:
+                          ObString &str,
+                          ObCollationType coll_type);
+   int print_field(const ObObj &obj, ObCsvFileWriter &data_writer);
++  int write_csv_header(ObCsvFileWriter &data_writer);
+   int print_lob_field(const ObObj &obj,
+                       const ObExpr &expr,
+                       const ObDatum &datum,
+@@ -292,6 +298,7 @@ private:
+   ObExternalFileFormat::FormatType format_type_;
+   uint32_t block_id_;
+   bool need_commit_;
++  bool header_written_;
+   static const int64_t SHARED_BUFFER_SIZE = 2LL * 1024 * 1024;
+ 
+ };
+diff --git a/src/sql/ob_sql.cpp b/src/sql/ob_sql.cpp
+index bb9e6183a..9d1162bc3 100644
+--- a/src/sql/ob_sql.cpp
++++ b/src/sql/ob_sql.cpp
+@@ -28,6 +28,7 @@
+ #include "sql/resolver/cmd/ob_variable_set_stmt.h"
+ #include "sql/resolver/cmd/ob_call_procedure_stmt.h"
+ #include "sql/resolver/cmd/ob_anonymous_block_stmt.h"
++#include "sql/resolver/ddl/ob_explain_stmt.h"
+ #include "sql/privilege_check/ob_privilege_check.h"
+ #include "sql/rewrite/ob_transformer_impl.h"
+ #include "sql/rewrite/ob_transform_pre_process.h"
+@@ -270,19 +271,43 @@ int ObSql::fill_result_set(ObResultSet &result_set,
+       break;
+     }
+     case stmt::T_EXPLAIN: {
+-      ObString tname = ObString::make_string("explain_table");
+-      ObString cname = ObString::make_string("Query Plan");
+-      field.tname_ = tname;
+-      field.org_tname_ = tname;
+-      field.cname_ = cname;
+-      field.org_cname_ = cname;
+-      field.type_.set_type(ObVarcharType);
+-      field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
+-      field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+-      field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
+-      field.type_.set_varchar(type_name);
+-      if (OB_FAIL(result_set.reserve_field_columns(1))) {
+-      } else if (OB_FAIL(result_set.add_field_column(field))) {
++      if (static_cast<ObExplainStmt&>(basic_stmt).is_describe()) {
++        static const char *const describe_field_names[] = {
++            "column_name", "column_type", "null", "key", "default", "extra"};
++        const int64_t describe_field_cnt = static_cast<int64_t>(ARRAYSIZEOF(describe_field_names));
++        if (OB_FAIL(result_set.reserve_field_columns(describe_field_cnt))) {
++        }
++        for (int64_t i = 0; OB_SUCC(ret) && i < describe_field_cnt; ++i) {
++          ObField desc_field;
++          ObString desc_tname = ObString::make_string("describe_table");
++          ObString desc_cname = ObString::make_string(describe_field_names[i]);
++          desc_field.tname_ = desc_tname;
++          desc_field.org_tname_ = desc_tname;
++          desc_field.cname_ = desc_cname;
++          desc_field.org_cname_ = desc_cname;
++          desc_field.type_.set_type(ObVarcharType);
++          desc_field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
++          desc_field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
++          desc_field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
++          desc_field.type_.set_varchar(type_name);
++          if (OB_FAIL(result_set.add_field_column(desc_field))) {
++          }
++        }
++      } else {
++        ObString tname = ObString::make_string("explain_table");
++        ObString cname = ObString::make_string("Query Plan");
++        field.tname_ = tname;
++        field.org_tname_ = tname;
++        field.cname_ = cname;
++        field.org_cname_ = cname;
++        field.type_.set_type(ObVarcharType);
++        field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
++        field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
++        field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
++        field.type_.set_varchar(type_name);
++        if (OB_FAIL(result_set.reserve_field_columns(1))) {
++        } else if (OB_FAIL(result_set.add_field_column(field))) {
++        }
+       }
+       break;
+     }
+diff --git a/src/sql/optimizer/ob_explain_log_plan.cpp b/src/sql/optimizer/ob_explain_log_plan.cpp
+index 7fa5437e7..42db9ed94 100644
+--- a/src/sql/optimizer/ob_explain_log_plan.cpp
++++ b/src/sql/optimizer/ob_explain_log_plan.cpp
+@@ -18,6 +18,8 @@
+ #include "sql/optimizer/ob_explain_log_plan.h"
+ #include "sql/optimizer/ob_log_values.h"
+ #include "sql/code_generator/ob_code_generator.h"
++#include "sql/resolver/dml/ob_select_stmt.h"
++#include "sql/resolver/dml/ob_file_table_def.h"
+ 
+ using namespace oceanbase;
+ using namespace sql;
+@@ -37,6 +39,8 @@ int ObExplainLogPlan::generate_normal_raw_plan()
+   int ret = OB_SUCCESS;
+   if (OB_ISNULL(get_stmt()) || OB_UNLIKELY(!get_stmt()->is_explain_stmt())) {
+     ret = OB_ERR_UNEXPECTED;
++  } else if (static_cast<const ObExplainStmt*>(get_stmt())->is_describe()) {
++    ret = generate_describe_plan();
+   } else {
+     ObLogPlan *child_plan = NULL;
+     const ObDMLStmt *child_stmt = NULL;
+@@ -109,6 +113,183 @@ int ObExplainLogPlan::generate_normal_raw_plan()
+   return ret;
+ }
+ 
++const char *ObExplainLogPlan::get_describe_type_name(const ObObjTypeClass tc, const ObObjType type)
++{
++  const char *name = "VARCHAR";
++  switch (tc) {
++    case ObIntTC:
++    case ObUIntTC:
++      name = "BIGINT";
++      break;
++    case ObFloatTC:
++    case ObDoubleTC:
++    case ObNumberTC:
++      name = "DOUBLE";
++      break;
++    case ObDateTC:
++      name = "DATE";
++      break;
++    case ObDateTimeTC:
++      name = "DATETIME";
++      break;
++    case ObNullTC:
++      name = "NULL";
++      break;
++    case ObStringTC:
++    case ObTextTC:
++    case ObJsonTC:
++    case ObIntervalTC:
++    case ObRowIDTC:
++    case ObLobTC:
++    case ObExtendTC:
++    case ObUnknownTC:
++    case ObMaxTC:
++      name = (ObJsonTC == tc) ? "JSON" : "VARCHAR";
++      break;
++    case ObOTimestampTC:
++      name = "DATETIME";
++      break;
++    case ObBitTC:
++    case ObEnumSetTC:
++      name = "VARCHAR";
++      break;
++    default:
++      name = "VARCHAR";
++      break;
++  }
++  UNUSED(type);
++  return name;
++}
++
++int ObExplainLogPlan::fill_describe_rows(const ObDMLStmt &child_stmt, ObLogValues &values_op)
++{
++  int ret = OB_SUCCESS;
++  const TableItem *file_table = NULL;
++  for (int64_t i = 0; OB_SUCC(ret) && i < child_stmt.get_table_size(); ++i) {
++    const TableItem *table_item = child_stmt.get_table_item(i);
++    if (OB_ISNULL(table_item)) {
++      ret = OB_ERR_UNEXPECTED;
++    } else if (table_item->is_file_table() && NULL != table_item->file_table_def_) {
++      file_table = table_item;
++    }
++  }
++  if (OB_FAIL(ret)) {
++  } else if (NULL != file_table) {
++    const ObFileTableDef *def = file_table->file_table_def_;
++    for (int64_t i = 0; OB_SUCC(ret) && i < def->column_cnt_; ++i) {
++      const ObFileColumnDef &col = def->columns_[i];
++      ObObj cells[OB_DESCRIBE_COLUMN_COUNT];
++      cells[0].set_varchar(col.name_);
++      cells[1].set_varchar(ObString::make_string(def->get_type_name(i)));
++      cells[2].set_varchar(ObString::make_string(col.nullable_ ? "YES" : "NO"));
++      cells[3].set_null();
++      cells[4].set_null();
++      cells[5].set_null();
++      for (int64_t k = 0; k < 3; ++k) {
++        cells[k].set_collation_type(ObCharset::get_system_collation());
++        cells[k].set_collation_level(CS_LEVEL_IMPLICIT);
++      }
++      ObNewRow row;
++      row.cells_ = cells;
++      row.count_ = OB_DESCRIBE_COLUMN_COUNT;
++      if (OB_FAIL(values_op.add_row(row))) {
++      }
++    }
++  } else if (OB_UNLIKELY(!child_stmt.is_select_stmt())) {
++    ret = OB_ERR_UNEXPECTED;
++  } else {
++    const ObSelectStmt &select_stmt = static_cast<const ObSelectStmt&>(child_stmt);
++    for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt.get_select_item_size(); ++i) {
++      const SelectItem &item = select_stmt.get_select_item(i);
++      const ObRawExpr *expr = item.expr_;
++      ObString col_name = item.alias_name_;
++      if (col_name.empty() && NULL != expr && expr->is_column_ref_expr()) {
++        col_name = static_cast<const ObColumnRefRawExpr*>(expr)->get_column_name();
++      }
++      if (col_name.empty()) {
++        col_name = ObString::make_string("column");
++      }
++      bool nullable = true;
++      const char *type_name = "VARCHAR";
++      if (NULL != expr) {
++        nullable = !expr->get_result_type().has_result_flag(NOT_NULL_FLAG);
++        type_name = get_describe_type_name(expr->get_type_class(), expr->get_data_type());
++      }
++      ObObj cells[OB_DESCRIBE_COLUMN_COUNT];
++      cells[0].set_varchar(col_name);
++      cells[1].set_varchar(ObString::make_string(type_name));
++      cells[2].set_varchar(ObString::make_string(nullable ? "YES" : "NO"));
++      cells[3].set_null();
++      cells[4].set_null();
++      cells[5].set_null();
++      ObNewRow row;
++      row.cells_ = cells;
++      row.count_ = OB_DESCRIBE_COLUMN_COUNT;
++      if (OB_FAIL(values_op.add_row(row))) {
++      }
++    }
++  }
++  return ret;
++}
++
++int ObExplainLogPlan::allocate_describe_output_expr(ObLogicalOperator &values_op)
++{
++  int ret = OB_SUCCESS;
++  if (OB_ISNULL(optimizer_context_.get_session_info())) {
++    ret = OB_ERR_UNEXPECTED;
++  }
++  for (int64_t i = 0; OB_SUCC(ret) && i < OB_DESCRIBE_COLUMN_COUNT; ++i) {
++    ObConstRawExpr *output = NULL;
++    if (OB_FAIL(optimizer_context_.get_expr_factory().create_raw_expr(T_VARCHAR, output))) {
++    } else {
++      ObObj v;
++      v.set_varchar(" ");
++      v.set_collation_type(ObCharset::get_system_collation());
++      output->set_value(v);
++      if (OB_FAIL(output->formalize(optimizer_context_.get_session_info()))) {
++      } else if (OB_FAIL(values_op.get_output_exprs().push_back(output))) {
++      } else if (OB_FAIL(get_optimizer_context().get_all_exprs().append(output))) {
++      }
++    }
++  }
++  if (OB_SUCC(ret)) {
++    values_op.set_branch_id(0);
++    values_op.set_id(0);
++    values_op.set_op_id(0);
++  }
++  return ret;
++}
++
++int ObExplainLogPlan::generate_describe_plan()
++{
++  int ret = OB_SUCCESS;
++  const ObExplainStmt *explain_stmt = static_cast<const ObExplainStmt*>(get_stmt());
++  const ObDMLStmt *child_stmt = NULL;
++  ObLogicalOperator *top = NULL;
++  ObLogValues *values_op = NULL;
++  if (OB_ISNULL(explain_stmt) || OB_ISNULL(child_stmt = explain_stmt->get_explain_query_stmt())) {
++    ret = OB_ERR_UNEXPECTED;
++  } else if (OB_FAIL(allocate_values_as_top(top))) {
++  } else if (OB_ISNULL(top) || OB_UNLIKELY(LOG_VALUES != top->get_type())) {
++    ret = OB_ERR_UNEXPECTED;
++  } else if (FALSE_IT(values_op = static_cast<ObLogValues*>(top))) {
++  } else if (OB_FAIL(fill_describe_rows(*child_stmt, *values_op))) {
++  } else {
++    set_plan_root(top);
++    top->mark_is_plan_root();
++    values_op->set_op_id(0);
++    set_max_op_id(1);
++    get_optimizer_context().get_all_exprs().reuse();
++    if (OB_FAIL(allocate_describe_output_expr(*values_op))) {
++    } else {
++      get_optimizer_context().set_plan_type(ObPhyPlanType::OB_PHY_PLAN_LOCAL,
++                                            ObPhyPlanType::OB_PHY_PLAN_LOCAL,
++                                            false);
++    }
++  }
++  return ret;
++}
++
+ int ObExplainLogPlan::check_explain_generate_plan_with_outline(ObLogPlan *real_plan)
+ {
+   int ret = OB_SUCCESS;
+diff --git a/src/sql/optimizer/ob_explain_log_plan.h b/src/sql/optimizer/ob_explain_log_plan.h
+index 1c12fdd83..3231288c7 100644
+--- a/src/sql/optimizer/ob_explain_log_plan.h
++++ b/src/sql/optimizer/ob_explain_log_plan.h
+@@ -33,6 +33,11 @@ namespace sql
+     virtual int generate_normal_raw_plan() override;
+   private:
+     int check_explain_generate_plan_with_outline(ObLogPlan *real_plan);
++    int generate_describe_plan();
++    static const int64_t OB_DESCRIBE_COLUMN_COUNT = 6;
++    static const char *get_describe_type_name(const ObObjTypeClass tc, const ObObjType type);
++    int fill_describe_rows(const ObDMLStmt &child_stmt, ObLogValues &values_op);
++    int allocate_describe_output_expr(ObLogicalOperator &values_op);
+     DISALLOW_COPY_AND_ASSIGN(ObExplainLogPlan);
+   };
+ }
+diff --git a/src/sql/optimizer/ob_log_plan.cpp b/src/sql/optimizer/ob_log_plan.cpp
+index ae1d7458c..e1e385b0f 100644
+--- a/src/sql/optimizer/ob_log_plan.cpp
++++ b/src/sql/optimizer/ob_log_plan.cpp
+@@ -6830,6 +6830,8 @@ int ObLogPlan::allocate_select_into_as_top(ObLogicalOperator *&old_top)
+       select_into->set_escaped_cht(into_item->escaped_cht_);
+       select_into->set_cs_type(into_item->cs_type_);
+       select_into->set_external_properties(into_item->external_properties_);
++      select_into->set_has_header(into_item->has_header_);
++      select_into->set_header_str(into_item->header_str_);
+       select_into->set_child(ObLogicalOperator::first_child, old_top);
+       // compute property
+       if (OB_FAIL(select_into->compute_property())) {
+diff --git a/src/sql/optimizer/ob_log_select_into.h b/src/sql/optimizer/ob_log_select_into.h
+index 1a26628dc..5a3bc5abe 100644
+--- a/src/sql/optimizer/ob_log_select_into.h
++++ b/src/sql/optimizer/ob_log_select_into.h
+@@ -44,7 +44,9 @@ public:
+         escaped_cht_(),
+         cs_type_(CS_TYPE_INVALID),
+         is_overwrite_(false),
+-        external_properties_()
++        external_properties_(),
++        has_header_(false),
++        header_str_()
+   {
+   }
+   virtual ~ObLogSelectInto() {}
+@@ -108,6 +110,22 @@ public:
+   {
+     external_properties_.assign_ptr(external_properties.ptr(), external_properties.length());
+   }
++  inline void set_has_header(bool has_header)
++  {
++    has_header_ = has_header;
++  }
++  inline void set_header_str(const common::ObString &header_str)
++  {
++    header_str_.assign_ptr(header_str.ptr(), header_str.length());
++  }
++  inline bool get_has_header() const
++  {
++    return has_header_;
++  }
++  inline const common::ObString &get_header_str() const
++  {
++    return header_str_;
++  }
+   inline ObItemType get_into_type() const
+   {
+     return into_type_;
+@@ -188,6 +206,8 @@ private:
+   common::ObCollationType cs_type_;
+   bool is_overwrite_;
+   common::ObString external_properties_;
++  bool has_header_;
++  common::ObString header_str_;
+ };
+ }
+ }
+diff --git a/src/sql/parser/sql_parser_mysql_mode.y b/src/sql/parser/sql_parser_mysql_mode.y
+index b60d1d693..1bba0a230 100644
+--- a/src/sql/parser/sql_parser_mysql_mode.y
++++ b/src/sql/parser/sql_parser_mysql_mode.y
+@@ -155,6 +155,13 @@
+ %nonassoc PATH
+ %nonassoc LOWER_THAN_BY_ACCESS_SESSION
+ 
++/* exactly one shift/reduce per keyword-led table function (JSON_TABLE,
++ * UNNEST, HYBRID_SEARCH) after table functions were added to table_factor;
++ * bison resolves them by shifting into the specialized rule, which is what
++ * the original grammar did. */
++%expect 3
++
++
+ %token ERROR /*used internal*/
+ %token PARSER_SYNTAX_ERROR /*used internal*/
+ 
+@@ -514,6 +521,7 @@ END_P SET_VAR DELIMITER
+ %type <node> vector_similarity_expr vector_similarity_metric
+ %type <node> algorithm_opt lock_opt
+ %type <node> flush_privileges_stmt opt_flush_privileges_scope
++%type <node> copy_stmt copy_option copy_option_name copy_option_list copy_option_value opt_copy_options opt_equal_mark_for_copy
+ %start sql_stmt
+ %%
+ ////////////////////////////////////////////////////////////////
+@@ -556,6 +564,7 @@ opt_end_p:
+ /* only preparable statement will set question mark size */
+ stmt:
+     select_stmt             { $$ = $1; question_mark_issue($$, result); }
++  | copy_stmt               { $$ = $1; question_mark_issue($$, result); }
+   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
+   | create_table_stmt       {
+     $$ = $1;
+@@ -10792,6 +10801,18 @@ tbl_name
+ {
+   $$ = $1;
+ }
++| relation_factor '(' expr_list ')'
++{
++  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, NULL);
++}
++| relation_factor '(' expr_list ')' relation_name
++{
++  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $5);
++}
++| relation_factor '(' expr_list ')' AS relation_name
++{
++  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $6);
++}
+ | table_subquery
+ {
+   $$ = $1;
+@@ -12256,6 +12277,72 @@ $$ = NULL;
+  *	explain grammar
+  *
+  *****************************************************************************/
++copy_stmt:
++    COPY '(' select_no_parens ')' TO STRING_VALUE opt_copy_options
++    {
++      malloc_non_terminal_node($$, result->malloc_pool_, T_COPY, 3, $3, $6, $7);
++    }
++  | COPY relation_factor TO STRING_VALUE opt_copy_options
++    {
++      malloc_non_terminal_node($$, result->malloc_pool_, T_COPY, 3, $2, $4, $5);
++    }
++  ;
++
++opt_copy_options:
++    /*empty*/
++    { $$ = NULL; }
++  | '(' copy_option_list ')'
++    { $$ = $2; }
++  ;
++
++copy_option_list:
++    copy_option
++    { $$ = $1; }
++  | copy_option_list ',' copy_option
++    {
++      malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
++    }
++  ;
++
++copy_option:
++    copy_option_name
++    { $$ = $1; }
++  | copy_option_name opt_equal_mark_for_copy copy_option_value
++    {
++      (void)($2);
++      malloc_non_terminal_node($$, result->malloc_pool_, T_OP_EQ, 2, $1, $3);
++    }
++  ;
++
++copy_option_name:
++    NAME_OB
++    { $$ = $1; }
++  | FORMAT
++    {
++      malloc_terminal_node($$, result->malloc_pool_, T_IDENT);
++      $$->str_value_ = (char *)"format";
++      $$->str_len_ = 6;
++    }
++  ;
++
++opt_equal_mark_for_copy:
++    /*empty*/
++    { $$ = NULL; }
++  | '='
++    { $$ = NULL; }
++  ;
++
++copy_option_value:
++    NAME_OB
++    { $$ = $1; }
++  | STRING_VALUE
++    { $$ = $1; }
++  | BOOL_VALUE
++    { $$ = $1; }
++  | number_literal
++    { $$ = $1; }
++  ;
++
+ explain_stmt:
+ explain_or_desc relation_factor opt_desc_column_option
+ {
+@@ -12265,7 +12352,15 @@ explain_or_desc relation_factor opt_desc_column_option
+   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $2, NULL, $3);
+ }
+ 
+-| explain_or_desc explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);}
++| explain_or_desc explainable_stmt
++{
++  if (NULL != $1) {
++    /* DESCRIBE <stmt>: keep the T_DESCRIBE marker in the format slot */
++    malloc_non_terminal_node($$, result->malloc_pool_, T_EXPLAIN, 5, $1, NULL, NULL, NULL, $2);
++  } else {
++    GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);
++  }
++}
+ | explain_or_desc PRETTY explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY, $3, NULL, NULL);}
+ | explain_or_desc PRETTY_COLOR explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY_COLOR, $3, NULL, NULL);}
+ 
+@@ -12306,8 +12401,14 @@ explain_or_desc relation_factor opt_desc_column_option
+ 
+ explain_or_desc:
+ EXPLAIN {$$ = NULL;}
+-| DESCRIBE {$$ = NULL;}
+-| DESC  {$$ = NULL;}
++| DESCRIBE
++{
++  malloc_terminal_node($$, result->malloc_pool_, T_DESCRIBE);
++}
++| DESC
++{
++  malloc_terminal_node($$, result->malloc_pool_, T_DESCRIBE);
++}
+ ;
+ 
+ explainable_stmt:
+diff --git a/src/sql/resolver/ddl/ob_explain_resolver.cpp b/src/sql/resolver/ddl/ob_explain_resolver.cpp
+index baa0f4d26..3b036dd1c 100644
+--- a/src/sql/resolver/ddl/ob_explain_resolver.cpp
++++ b/src/sql/resolver/ddl/ob_explain_resolver.cpp
+@@ -65,7 +65,10 @@ int ObExplainResolver::resolve(const ParseNode &parse_tree)
+       } else {
+         explain_stmt->set_explain_query_stmt(static_cast<ObDMLStmt *>(child_stmt));
+         ParseNode *format = parse_tree.children_[EXPLAIN_FORMAT];
+-        if (NULL != format) {
++        if (NULL != format && T_DESCRIBE == format->type_) {
++          /* DESCRIBE <stmt>: report the result columns instead of the plan */
++          explain_stmt->set_describe(true);
++        } else if (NULL != format) {
+           switch (format->type_) {
+           case T_OUTLINE:
+           {
+diff --git a/src/sql/resolver/ddl/ob_explain_stmt.cpp b/src/sql/resolver/ddl/ob_explain_stmt.cpp
+index dc1c35d00..4c1cf050f 100644
+--- a/src/sql/resolver/ddl/ob_explain_stmt.cpp
++++ b/src/sql/resolver/ddl/ob_explain_stmt.cpp
+@@ -25,7 +25,8 @@ namespace sql
+ {
+ ObExplainStmt::ObExplainStmt() : ObDMLStmt(stmt::T_EXPLAIN),
+                                  format_(EXPLAIN_UNINITIALIZED),
+-                                 explain_query_stmt_(NULL)
++                                 explain_query_stmt_(NULL),
++                                 is_describe_(false)
+ {
+ }
+ 
+diff --git a/src/sql/resolver/ddl/ob_explain_stmt.h b/src/sql/resolver/ddl/ob_explain_stmt.h
+index 08858b2e2..1725a2ace 100644
+--- a/src/sql/resolver/ddl/ob_explain_stmt.h
++++ b/src/sql/resolver/ddl/ob_explain_stmt.h
+@@ -57,6 +57,8 @@ public:
+   virtual bool is_affect_found_rows() const { return is_select_explain(); }
+   bool is_explain_extended() const { return EXPLAIN_EXTENDED == format_
+                                             || EXPLAIN_EXTENDED_NOADDR == format_; }
++  void set_describe(bool is_describe) { is_describe_ = is_describe; }
++  bool is_describe() const { return is_describe_; }
+ 
+   DECLARE_VIRTUAL_TO_STRING;
+ private:
+@@ -66,6 +68,7 @@ private:
+   ObDMLStmt *explain_query_stmt_;
+   common::ObString into_table_;
+   common::ObString statement_id_;
++  bool is_describe_;
+   DISALLOW_COPY_AND_ASSIGN(ObExplainStmt);
+ };
+ 
+diff --git a/src/sql/resolver/dml/ob_copy_resolver.cpp b/src/sql/resolver/dml/ob_copy_resolver.cpp
+new file mode 100644
+index 000000000..fc5004eca
+--- /dev/null
++++ b/src/sql/resolver/dml/ob_copy_resolver.cpp
+@@ -0,0 +1,386 @@
++/**
++ * Copyright (c) 2025 OceanBase.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#define USING_LOG_PREFIX SQL_RESV
++#include "sql/resolver/dml/ob_copy_resolver.h"
++#include "sql/resolver/dml/ob_select_resolver.h"
++#include "sql/resolver/dml/ob_select_stmt.h"
++#include "sql/resolver/ob_resolver_utils.h"
++#include "share/system_variable/ob_sys_var_class_type.h"
++#include "lib/charset/ob_charset.h"
++#include "lib/string/ob_string.h"
++#include "lib/utility/utility.h"
++#include <limits.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++using namespace oceanbase::common;
++using namespace oceanbase::share;
++
++namespace oceanbase
++{
++namespace sql
++{
++
++namespace copy_resolver_private
++{
++static const int64_t COPY_HEADER_SEPARATOR = '\x01';
++
++static bool name_equal(const ObString &name, const char *literal)
++{
++  const int64_t literal_len = static_cast<int64_t>(strlen(literal));
++  return name.length() == static_cast<int32_t>(literal_len)
++         && 0 == strncasecmp(name.ptr(), literal, literal_len);
++}
++
++static int value_to_string(const ParseNode &node, char *buf, int64_t buf_len, ObString &out)
++{
++  int ret = OB_SUCCESS;
++  if (T_IDENT == node.type_ || T_VARCHAR == node.type_ || T_CHAR == node.type_ || T_TEXT == node.type_) {
++    out.assign_ptr(node.str_value_, node.str_len_);
++  } else if (T_INT == node.type_ || T_BOOL == node.type_) {
++    const int64_t len = snprintf(buf, static_cast<size_t>(buf_len), "%ld", node.value_);
++    if (OB_UNLIKELY(len <= 0 || len >= buf_len)) {
++      ret = OB_ERR_UNEXPECTED;
++      LOG_WARN("failed to format integer value", K(ret), K(len));
++    } else {
++      out.assign_ptr(buf, static_cast<ObString::obstr_size_t>(len));
++    }
++  } else {
++    ret = OB_ERR_PARSE_SQL;
++    LOG_WARN("unexpected copy option value type", K(ret), "type", node.type_);
++  }
++  return ret;
++}
++
++static int value_to_bool(const ParseNode &node, bool &value)
++{
++  int ret = OB_SUCCESS;
++  char buf[64];
++  ObString text;
++  if (T_BOOL == node.type_) {
++    value = (0 != node.value_);
++  } else if (OB_FAIL(value_to_string(node, buf, sizeof(buf), text))) {
++  } else {
++    value = text.empty() ? false : (name_equal(text, "true") || name_equal(text, "1")
++                                    || name_equal(text, "on") || name_equal(text, "yes"));
++  }
++  return ret;
++}
++} // namespace copy_resolver_private
++
++using namespace copy_resolver_private;
++
++int ObCopyResolver::resolve(const ParseNode &parse_tree)
++{
++  int ret = OB_SUCCESS;
++  const ParseNode *inner_node = NULL;
++  if (OB_UNLIKELY(T_COPY != parse_tree.type_ || 3 != parse_tree.num_child_ || OB_ISNULL(parse_tree.children_))) {
++    ret = OB_ERR_UNEXPECTED;
++    LOG_WARN("invalid copy parse tree", K(ret), "type", parse_tree.type_, "num_child", parse_tree.num_child_);
++  } else if (OB_ISNULL(inner_node = parse_tree.children_[0])
++             || OB_ISNULL(parse_tree.children_[1])) {
++    ret = OB_ERR_PARSE_SQL;
++    LOG_WARN("invalid copy parse tree, inner query or path is null", K(ret));
++  } else if (OB_FAIL(resolve_inner_select(*inner_node))) {
++  } else if (OB_FAIL(build_select_into(*parse_tree.children_[1], parse_tree.children_[2]))) {
++  }
++  return ret;
++}
++
++int ObCopyResolver::resolve_inner_select(const ParseNode &inner_node)
++{
++  int ret = OB_SUCCESS;
++  if (OB_UNLIKELY(T_SELECT != inner_node.type_)) {
++    ret = OB_NOT_SUPPORTED;
++    LOG_WARN("copy from table is not supported now", K(ret), "type", inner_node.type_);
++    LOG_USER_ERROR(OB_NOT_SUPPORTED, "copy from table");
++  } else {
++    ObSelectResolver select_resolver(params_);
++    if (OB_FAIL(select_resolver.resolve(inner_node))) {
++      LOG_WARN("failed to resolve inner select of copy", K(ret));
++    } else if (OB_ISNULL(select_stmt_ = static_cast<ObSelectStmt*>(select_resolver.get_basic_stmt()))) {
++      ret = OB_ERR_UNEXPECTED;
++      LOG_WARN("inner select stmt is null", K(ret));
++    } else {
++      set_basic_stmt(select_stmt_);
++    }
++  }
++  return ret;
++}
++
++int ObCopyResolver::get_option_name(const ParseNode &name_node, ObString &name)
++{
++  int ret = OB_SUCCESS;
++  if (OB_UNLIKELY(T_IDENT != name_node.type_)) {
++    ret = OB_ERR_PARSE_SQL;
++    LOG_WARN("invalid copy option name", K(ret), "type", name_node.type_);
++  } else if (OB_UNLIKELY(OB_ISNULL(name_node.str_value_))) {
++    ret = OB_ERR_PARSE_SQL;
++    LOG_WARN("invalid copy option name", K(ret), "type", name_node.type_);
++  } else {
++    name.assign_ptr(name_node.str_value_, name_node.str_len_);
++  }
++  return ret;
++}
++
++int ObCopyResolver::resolve_copy_options(const ParseNode *options_node,
++                                         bool &has_header,
++                                         ObString &delimiter,
++                                         ObString &quote_str,
++                                         ObString &escape_str)
++{
++  int ret = OB_SUCCESS;
++  if (NULL == options_node) {
++    // no options
++  } else if (T_EXPR_LIST == options_node->type_ && 2 == options_node->num_child_
++             && OB_NOT_NULL(options_node->children_)) {
++    if (OB_FAIL(resolve_copy_options(options_node->children_[0], has_header, delimiter, quote_str, escape_str))) {
++    } else if (OB_FAIL(resolve_copy_options(options_node->children_[1], has_header, delimiter, quote_str, escape_str))) {
++    }
++  } else {
++    ObString name;
++    const ParseNode *value_node = NULL;
++    if (T_IDENT == options_node->type_) {
++      if (OB_FAIL(get_option_name(*options_node, name))) {
++      } else if (name_equal(name, "header")) {
++        has_header = true;
++      } else {
++        ret = OB_ERR_PARSE_SQL;
++        LOG_WARN("unsupported copy flag", K(ret), K(name));
++      }
++    } else {
++      if (T_OP_EQ != options_node->type_ || 2 != options_node->num_child_ || OB_ISNULL(options_node->children_)) {
++        ret = OB_ERR_PARSE_SQL;
++        LOG_WARN("copy option needs a value", K(ret), "type", options_node->type_);
++      } else if (OB_ISNULL(value_node = options_node->children_[1])) {
++        ret = OB_ERR_PARSE_SQL;
++      } else if (OB_FAIL(get_option_name(*options_node->children_[0], name))) {
++      } else if (name_equal(name, "header")) {
++        if (OB_FAIL(value_to_bool(*value_node, has_header))) {
++        }
++      } else if (name_equal(name, "format")) {
++        char buf[64];
++        ObString format_str;
++        if (OB_FAIL(value_to_string(*value_node, buf, sizeof(buf), format_str))) {
++        } else if (!name_equal(format_str, "csv")) {
++          ret = OB_ERR_PARSE_SQL;
++          LOG_WARN("copy only supports csv format", K(ret), K(format_str));
++        }
++      } else if (name_equal(name, "delimiter") || name_equal(name, "delim") || name_equal(name, "sep")) {
++        char buf[64];
++        ObString value;
++        if (OB_FAIL(value_to_string(*value_node, buf, sizeof(buf), value))) {
++        } else if (1 != value.length()) {
++          ret = OB_ERR_PARSE_SQL;
++          LOG_WARN("delimiter must be a single character", K(ret), K(value));
++        } else {
++          delimiter = value;
++        }
++      } else if (name_equal(name, "quote")) {
++        char buf[64];
++        ObString value;
++        if (OB_FAIL(value_to_string(*value_node, buf, sizeof(buf), value))) {
++        } else if (1 != value.length()) {
++          ret = OB_ERR_PARSE_SQL;
++          LOG_WARN("quote must be a single character", K(ret), K(value));
++        } else {
++          quote_str = value;
++        }
++      } else if (name_equal(name, "escape")) {
++        char buf[64];
++        ObString value;
++        if (OB_FAIL(value_to_string(*value_node, buf, sizeof(buf), value))) {
++        } else if (1 != value.length()) {
++          ret = OB_ERR_PARSE_SQL;
++          LOG_WARN("escape must be a single character", K(ret), K(value));
++        } else {
++          escape_str = value;
++        }
++      } else if (name_equal(name, "nullstr") || name_equal(name, "null")
++                 || name_equal(name, "null_string")) {
++        // accepted, null representation is handled by the csv writer
++      } else {
++        ret = OB_ERR_PARSE_SQL;
++        LOG_WARN("unsupported copy option", K(ret), K(name));
++      }
++    }
++  }
++  return ret;
++}
++
++int ObCopyResolver::build_header_str(const ObSelectStmt &select_stmt, ObString &header)
++{
++  int ret = OB_SUCCESS;
++  int64_t len = 0;
++  char *buf = NULL;
++  const int64_t select_cnt = select_stmt.get_select_item_size();
++  if (OB_UNLIKELY(select_cnt <= 0)) {
++    ret = OB_ERR_UNEXPECTED;
++    LOG_WARN("no select item to build copy header", K(ret), K(select_cnt));
++  } else {
++    for (int64_t i = 0; OB_SUCC(ret) && i < select_cnt; ++i) {
++      const SelectItem &item = select_stmt.get_select_item(i);
++      const ObString &name = (!item.alias_name_.empty()) ? item.alias_name_ : item.expr_name_;
++      len += name.length() + (i > 0 ? 1 : 0);
++    }
++  }
++  if (OB_SUCC(ret)) {
++    if (OB_UNLIKELY(len <= 0)) {
++      ret = OB_ERR_UNEXPECTED;
++      LOG_WARN("empty copy header", K(ret), K(len));
++    } else if (OB_ISNULL(buf = static_cast<char*>(allocator_->alloc(len)))) {
++      ret = OB_ALLOCATE_MEMORY_FAILED;
++      LOG_WARN("failed to allocate copy header buffer", K(ret), K(len));
++    } else {
++      int64_t pos = 0;
++      for (int64_t i = 0; OB_SUCC(ret) && i < select_cnt; ++i) {
++        const SelectItem &item = select_stmt.get_select_item(i);
++        const ObString &name = (!item.alias_name_.empty()) ? item.alias_name_ : item.expr_name_;
++        if (i > 0) {
++          buf[pos++] = static_cast<char>(COPY_HEADER_SEPARATOR);
++        }
++        if (!name.empty()) {
++          MEMCPY(buf + pos, name.ptr(), name.length());
++          pos += name.length();
++        }
++      }
++      header.assign_ptr(buf, static_cast<ObString::obstr_size_t>(pos));
++    }
++  }
++  return ret;
++}
++
++int ObCopyResolver::build_select_into(const ParseNode &path_node, const ParseNode *options_node)
++{
++  int ret = OB_SUCCESS;
++  bool file_sql_enabled = false;
++  bool has_header = false;
++  ObString delimiter;
++  ObString quote_str;
++  ObString escape_str;
++  ObString path;
++  ObString header;
++  ObString secure_file_priv;
++  ObString actual_path;
++  char path_buf[PATH_MAX + 1];
++  char real_path[PATH_MAX + 1];
++  ObSelectIntoItem *into_item = NULL;
++  if (OB_ISNULL(select_stmt_) || OB_ISNULL(allocator_) || OB_ISNULL(session_info_)) {
++    ret = OB_NOT_INIT;
++    LOG_WARN("copy resolver is not inited", K(ret));
++  } else if (OB_FAIL(session_info_->get_sys_variable(SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
++    LOG_WARN("failed to get enable_file_sql", K(ret));
++  } else if (!file_sql_enabled) {
++    ret = OB_NOT_SUPPORTED;
++    LOG_WARN("file sql is disabled", K(ret));
++    LOG_USER_ERROR(OB_NOT_SUPPORTED, "file sql is disabled, please set enable_file_sql to on first");
++  } else if (OB_UNLIKELY(T_VARCHAR != path_node.type_ && T_CHAR != path_node.type_)
++             || OB_ISNULL(path_node.str_value_) || path_node.str_len_ <= 0
++             || path_node.str_len_ >= static_cast<int64_t>(sizeof(path_buf))) {
++    ret = OB_ERR_PARSE_SQL;
++    LOG_WARN("invalid copy target path", K(ret), "type", path_node.type_, "len", path_node.str_len_);
++  } else if (FALSE_IT(MEMCPY(path_buf, path_node.str_value_, path_node.str_len_))) {
++  } else if (FALSE_IT(path_buf[path_node.str_len_] = '\0')) {
++  } else {
++    char dir_buf[PATH_MAX + 1];
++    const char *slash = strrchr(path_buf, '/');
++    const char *base_name = NULL;
++    char real_dir[PATH_MAX + 1];
++    if (NULL == slash) {
++      MEMCPY(dir_buf, ".", 2);
++      base_name = path_buf;
++    } else if (slash == path_buf) {
++      MEMCPY(dir_buf, "/", 2);
++      base_name = slash + 1;
++    } else {
++      const int64_t dir_len = slash - path_buf;
++      MEMCPY(dir_buf, path_buf, dir_len);
++      dir_buf[dir_len] = '\0';
++      base_name = slash + 1;
++    }
++    if (OB_ISNULL(base_name) || '\0' == base_name[0]) {
++      ret = OB_ERR_PARSE_SQL;
++      LOG_WARN("invalid copy target file name", K(ret), K(path_buf));
++    } else if (OB_ISNULL(realpath(dir_buf, real_dir))) {
++      ret = OB_FILE_NOT_EXIST;
++      LOG_WARN("copy target directory does not exist", K(ret), K(dir_buf), KERRMSG);
++    } else if (0 == ::access(path_buf, F_OK)) {
++      ret = OB_FILE_ALREADY_EXIST;
++      LOG_WARN("copy target file already exists", K(ret), K(path_buf));
++    } else {
++      const int64_t len = snprintf(real_path, sizeof(real_path), "%s/%s", real_dir, base_name);
++      if (OB_UNLIKELY(len <= 0 || len >= static_cast<int64_t>(sizeof(real_path)))) {
++        ret = OB_INVALID_ARGUMENT;
++        LOG_WARN("copy target path is too long", K(ret), K(len));
++      } else {
++        actual_path.assign_ptr(real_path, static_cast<ObString::obstr_size_t>(len));
++      }
++    }
++  }
++  if (OB_FAIL(ret)) {
++  } else if (OB_FAIL(session_info_->get_secure_file_priv(secure_file_priv))) {
++    LOG_WARN("failed to get secure file priv", K(ret));
++  } else if (!session_info_->is_inner()
++             && OB_FAIL(ObResolverUtils::check_secure_path(secure_file_priv, actual_path))) {
++    LOG_WARN("copy target is not in secure file priv", K(ret), K(secure_file_priv), K(actual_path));
++  } else if (OB_FAIL(resolve_copy_options(options_node, has_header, delimiter, quote_str, escape_str))) {
++  } else if (OB_FAIL(ob_write_string(*allocator_, actual_path, path))) {
++    LOG_WARN("failed to copy copy target path", K(ret));
++  } else {
++    void *buf = NULL;
++    if (OB_ISNULL(buf = allocator_->alloc(sizeof(ObSelectIntoItem)))) {
++      ret = OB_ALLOCATE_MEMORY_FAILED;
++      LOG_WARN("failed to allocate select into item", K(ret));
++    } else {
++      into_item = new (buf) ObSelectIntoItem();
++      into_item->into_type_ = T_INTO_OUTFILE;
++      into_item->cs_type_ = ObCharset::get_system_collation();
++      ObObj path_obj;
++      path_obj.set_varchar(path);
++      path_obj.set_collation_type(into_item->cs_type_);
++      path_obj.set_collation_level(CS_LEVEL_COERCIBLE);
++      into_item->outfile_name_ = path_obj;
++      into_item->is_single_ = true;
++      ObString field_term = (delimiter.empty()) ? ObString(1, ",") : delimiter;
++      ObString field_term_copy;
++      if (OB_FAIL(ob_write_string(*allocator_, field_term, field_term_copy))) {
++        LOG_WARN("failed to copy field terminator", K(ret));
++      } else {
++        ObObj field_obj;
++        field_obj.set_varchar(field_term_copy);
++        field_obj.set_collation_type(into_item->cs_type_);
++        field_obj.set_collation_level(CS_LEVEL_COERCIBLE);
++        into_item->field_str_ = field_obj;
++      }
++      into_item->has_header_ = has_header;
++      if (OB_SUCC(ret) && has_header) {
++        if (OB_FAIL(build_header_str(*select_stmt_, header))) {
++        } else {
++          into_item->header_str_ = header;
++        }
++      }
++      if (OB_SUCC(ret)) {
++        select_stmt_->set_select_into(into_item);
++      }
++    }
++  }
++  return ret;
++}
++
++} // namespace sql
++} // namespace oceanbase
+diff --git a/src/sql/resolver/dml/ob_copy_resolver.h b/src/sql/resolver/dml/ob_copy_resolver.h
+new file mode 100644
+index 000000000..9e5ce2d84
+--- /dev/null
++++ b/src/sql/resolver/dml/ob_copy_resolver.h
+@@ -0,0 +1,61 @@
++/**
++ * Copyright (c) 2025 OceanBase.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef SRC_SQL_RESOLVER_DML_OB_COPY_RESOLVER_H_
++#define SRC_SQL_RESOLVER_DML_OB_COPY_RESOLVER_H_
++
++#include "sql/resolver/dml/ob_dml_resolver.h"
++
++namespace oceanbase
++{
++namespace sql
++{
++
++class ObSelectStmt;
++class ObSelectIntoItem;
++
++// COPY (query) TO 'file' (FORMAT CSV, HEADER, DELIMITER ',', ...)
++// COPY table TO 'file' (...)
++class ObCopyResolver : public ObDMLResolver
++{
++public:
++  explicit ObCopyResolver(ObResolverParams &params)
++      : ObDMLResolver(params),
++        select_stmt_(NULL)
++  {
++  }
++  virtual ~ObCopyResolver() {}
++  virtual int resolve(const ParseNode &parse_tree) override;
++private:
++  int resolve_inner_select(const ParseNode &inner_node);
++  int build_select_into(const ParseNode &path_node, const ParseNode *options_node);
++  int resolve_copy_options(const ParseNode *options_node,
++                           bool &has_header,
++                           common::ObString &delimiter,
++                           common::ObString &quote_str,
++                           common::ObString &escape_str);
++  int build_header_str(const ObSelectStmt &select_stmt, common::ObString &header);
++  int get_option_name(const ParseNode &name_node, common::ObString &name);
++private:
++  ObSelectStmt *select_stmt_;
++private:
++  DISALLOW_COPY_AND_ASSIGN(ObCopyResolver);
++};
++
++} // namespace sql
++} // namespace oceanbase
++
++#endif // SRC_SQL_RESOLVER_DML_OB_COPY_RESOLVER_H_
+diff --git a/src/sql/resolver/dml/ob_dml_resolver.cpp b/src/sql/resolver/dml/ob_dml_resolver.cpp
+index f3eb7a821..391d713b7 100644
+--- a/src/sql/resolver/dml/ob_dml_resolver.cpp
++++ b/src/sql/resolver/dml/ob_dml_resolver.cpp
+@@ -16,6 +16,12 @@
+ 
+ #define USING_LOG_PREFIX SQL_RESV
+ #include "config_bridge.h"
++#include "sql/ob_sql_utils.h"
++#include "sql/resolver/dml/ob_sql_hint.h"
++#include "sql/resolver/dml/ob_file_sql_utils.h"
++#include "sql/resolver/dml/ob_file_table_def.h"
++#include "share/system_variable/ob_sys_var_class_type.h"
++#include <string.h>
+ #include "ob_dml_resolver.h"
+ #include "sql/resolver/dml/ob_view_table_resolver.h"
+ #include "sql/optimizer/ob_optimizer_util.h"
+@@ -2624,6 +2630,7 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
+   const ParseNode *alias_node = NULL;
+   const ParseNode *time_node = NULL;
+   ObDMLStmt *stmt = get_stmt();
++  LOG_ERROR("FILESQL resolve_table", "parse_type", parse_tree.type_, "node_type", table_node->type_);
+ 
+   if (T_ORG == parse_tree.type_) {
+     table_node = parse_tree.children_[0];
+@@ -2724,10 +2731,16 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
+         }
+         break;
+       }
++      case T_FILE_TABLE_EXPRESSION: {
++        LOG_ERROR("FILESQL dispatch", "type", table_node->type_, "value", static_cast<int>(T_FILE_TABLE_EXPRESSION));
++        if (OB_FAIL(resolve_file_table_item(*table_node, table_item))) {
++        }
++        break;
++      }
+       default:
+         /* won't be here */
+         ret = OB_ERR_PARSER_SYNTAX;
+-        LOG_WARN("Unknown table type", "node_type", table_node->type_);
++        LOG_ERROR("FILESQL unknown table node", "node_type", table_node->type_, "parse_type", parse_tree.type_);
+         break;
+       }
+       if (OB_SUCC(ret)
+@@ -11135,6 +11148,732 @@ int ObDMLResolver::resolve_values_table_item(const ParseNode &table_node, TableI
+   return ret;
+ }
+ 
++namespace file_sql_private {
++static const int64_t FILE_SQL_MAX_PATH_LEN = 4096;
++
++int alloc_string(ObIAllocator &allocator, const char *str, const int64_t len, ObString &out)
++{
++  int ret = OB_SUCCESS;
++  char *buf = NULL;
++  out.reset();
++  if (OB_UNLIKELY(len < 0) || OB_UNLIKELY(len > 0 && OB_ISNULL(str))) {
++    ret = OB_INVALID_ARGUMENT;
++  } else if (0 == len) {
++    out.reset();
++  } else if (OB_ISNULL(buf = static_cast<char *>(allocator.alloc(len)))) {
++    ret = OB_ALLOCATE_MEMORY_FAILED;
++    LOG_WARN("failed to alloc memory for file sql string", K(ret), K(len));
++  } else {
++    MEMCPY(buf, str, len);
++    out.assign_ptr(buf, static_cast<int32_t>(len));
++  }
++  return ret;
++}
++
++int resolve_option_obj(ObResolverParams &params, const ParseNode *node, ObObj &obj);
++
++ObObjType storage_type(const ObFileSqlType file_type)
++{
++  ObObjType type = ObVarcharType;
++  if (FS_TYPE_BIGINT == file_type || FS_TYPE_BOOLEAN == file_type) {
++    type = ObIntType;
++  } else if (FS_TYPE_DOUBLE == file_type) {
++    type = ObDoubleType;
++  } else {
++    type = ObVarcharType;
++  }
++  return type;
++}
++
++bool is_bare_identifier(const ParseNode *node, ObString &name)
++{
++  bool found = false;
++  const ParseNode *cur = node;
++  while (OB_NOT_NULL(cur) && 1 == cur->num_child_ && OB_NOT_NULL(cur->children_)) {
++    cur = cur->children_[0];
++  }
++  if (OB_NOT_NULL(cur)) {
++    if (T_COLUMN_REF == cur->type_ && 3 == cur->num_child_ && OB_NOT_NULL(cur->children_)) {
++      const ParseNode *col = cur->children_[2];
++      if (OB_ISNULL(cur->children_[0]) && OB_ISNULL(cur->children_[1]) && OB_NOT_NULL(col) &&
++          OB_NOT_NULL(col->str_value_) && col->str_len_ > 0) {
++        name.assign_ptr(col->str_value_, static_cast<int32_t>(col->str_len_));
++        found = true;
++      }
++    } else if (OB_NOT_NULL(cur->str_value_) && cur->str_len_ > 0 &&
++               (T_IDENT == cur->type_ || T_RELATION_FACTOR == cur->type_)) {
++      name.assign_ptr(cur->str_value_, static_cast<int32_t>(cur->str_len_));
++      found = true;
++    }
++  }
++  return found;
++}
++
++bool is_named_argument(ParseNode *node, ObString &name, ParseNode *&value)
++{
++  int ret = OB_SUCCESS;
++  bool found = false;
++  value = NULL;
++  if (OB_NOT_NULL(node) && T_OP_EQ == node->type_ && 2 == node->num_child_ &&
++      OB_NOT_NULL(node->children_) && is_bare_identifier(node->children_[0], name) &&
++      !name.empty()) {
++    value = node->children_[1];
++    found = true;
++  }
++  if (!found && OB_NOT_NULL(node) && T_OP_EQ == node->type_) {
++    LOG_WARN("file table option is not recognized as named argument", "lhs_type",
++             OB_NOT_NULL(node->children_) && OB_NOT_NULL(node->children_[0])
++                 ? static_cast<int64_t>(node->children_[0]->type_)
++                 : -1,
++             "lhs_num_child",
++             OB_NOT_NULL(node->children_) && OB_NOT_NULL(node->children_[0])
++                 ? node->children_[0]->num_child_
++                 : -1,
++             "eq_num_child", node->num_child_);
++  }
++  (void)ret;
++  return found;
++}
++
++int get_string_value(const ParseNode *node, ObString &value)
++{
++  int ret = OB_SUCCESS;
++  if (OB_ISNULL(node)) {
++    ret = OB_ERR_PARSE_SQL;
++  } else if (T_VARCHAR == node->type_ || T_CHAR == node->type_ || T_TEXT == node->type_) {
++    value.assign_ptr(node->str_value_, static_cast<int32_t>(node->str_len_));
++  } else if (OB_NOT_NULL(node->str_value_) && node->str_len_ > 0) {
++    value.assign_ptr(node->str_value_, static_cast<int32_t>(node->str_len_));
++  } else {
++    ret = OB_ERR_PARSE_SQL;
++  }
++  return ret;
++}
++
++int get_bool_value(ObResolverParams &params, const ParseNode *node, bool &value)
++{
++  int ret = OB_SUCCESS;
++  ObObj obj;
++  if (OB_ISNULL(node)) {
++    ret = OB_ERR_PARSE_SQL;
++  } else if (T_BOOL == node->type_) {
++    value = (0 != node->value_);
++  } else if (T_INT == node->type_) {
++    value = (0 != node->value_);
++  } else if (T_VARCHAR == node->type_ || T_CHAR == node->type_) {
++    ObString text;
++    text.assign_ptr(node->str_value_, static_cast<int32_t>(node->str_len_));
++    if (0 == text.case_compare(ObString::make_string("true")) ||
++        0 == text.case_compare(ObString::make_string("1"))) {
++      value = true;
++    } else if (0 == text.case_compare(ObString::make_string("false")) ||
++               0 == text.case_compare(ObString::make_string("0"))) {
++      value = false;
++    } else {
++      ret = OB_ERR_PARSE_SQL;
++    }
++  } else if (OB_FAIL(resolve_option_obj(params, node, obj))) {
++    LOG_WARN("invalid boolean option value", K(ret), "value_type",
++             static_cast<int64_t>(node->type_));
++  } else if (obj.is_unknown()) {
++    value = (0 != obj.get_unknown());
++  } else if (obj.is_integer_type()) {
++    value = (0 != obj.get_int());
++  } else if (obj.is_number()) {
++    int64_t int_value = 0;
++    const ObNumber &num = obj.get_number();
++    if (OB_FAIL(num.cast_to_int64(int_value))) {
++      LOG_WARN("failed to cast option value to integer", K(ret), K(obj));
++    } else {
++      value = (0 != int_value);
++    }
++  } else {
++    LOG_WARN("boolean option value is not an integer", K(ret), K(obj));
++    ret = OB_ERR_PARSE_SQL;
++  }
++  return ret;
++}
++
++int resolve_option_obj(ObResolverParams &params, const ParseNode *node, ObObj &obj)
++{
++  int ret = OB_SUCCESS;
++  ObRawExpr *expr = NULL;
++  if (OB_ISNULL(node)) {
++    ret = OB_ERR_PARSE_SQL;
++  } else if (OB_FAIL(ObResolverUtils::resolve_const_expr(params, *node, expr, NULL))) {
++  } else if (OB_ISNULL(expr) || !expr->is_const_raw_expr()) {
++    ret = OB_ERR_PARSE_SQL;
++  } else {
++    const ObObj &const_value = static_cast<ObConstRawExpr *>(expr)->get_value();
++    if (const_value.is_unknown()) {
++      bool need_check = false;
++      if (OB_ISNULL(params.param_list_)) {
++        ret = OB_ERR_UNEXPECTED;
++        LOG_WARN("param list is null", K(ret));
++      } else if (OB_FAIL(ObSQLUtils::get_param_value(const_value, *params.param_list_, obj, need_check))) {
++        LOG_WARN("failed to get param value", K(ret));
++      }
++    } else {
++      obj = const_value;
++    }
++  }
++  return ret;
++}
++
++int get_int_value(ObResolverParams &params, const ParseNode *node, int64_t &value)
++{
++  int ret = OB_SUCCESS;
++  ObObj obj;
++  if (OB_ISNULL(node)) {
++    ret = OB_ERR_PARSE_SQL;
++  } else if (T_INT == node->type_) {
++    value = node->value_;
++  } else if (T_OP_NEG == node->type_ && 1 == node->num_child_ &&
++             OB_NOT_NULL(node->children_) && OB_NOT_NULL(node->children_[0]) &&
++             T_INT == node->children_[0]->type_) {
++    value = -node->children_[0]->value_;
++  } else if (OB_FAIL(resolve_option_obj(params, node, obj))) {
++    LOG_WARN("invalid integer option value", K(ret), "value_type",
++             static_cast<int64_t>(node->type_));
++  } else if (obj.is_unknown()) {
++    value = obj.get_unknown();
++  } else if (obj.is_integer_type()) {
++    value = obj.get_int();
++  } else if (obj.is_number()) {
++    const ObNumber &num = obj.get_number();
++    if (OB_FAIL(num.cast_to_int64(value))) {
++      LOG_WARN("failed to cast option value to integer", K(ret), K(obj));
++    }
++  } else {
++    LOG_WARN("integer option value is not an integer", K(ret), K(obj));
++    ret = OB_ERR_PARSE_SQL;
++  }
++  return ret;
++}
++
++int check_format_value(const ObFileSqlFormat format, const bool is_glob, const ObString &fmt_value)
++{
++  int ret = OB_SUCCESS;
++  if (is_glob) {
++    ret = OB_ERR_PARSE_SQL;
++  } else if (FS_FMT_CSV == format) {
++    if (0 != fmt_value.case_compare(ObString::make_string("csv"))) {
++      ret = OB_ERR_PARSE_SQL;
++    }
++  } else if (FS_FMT_JSONL == format) {
++    if (0 != fmt_value.case_compare(ObString::make_string("newline_delimited")) &&
++        0 != fmt_value.case_compare(ObString::make_string("ndjson")) &&
++        0 != fmt_value.case_compare(ObString::make_string("jsonl"))) {
++      ret = OB_ERR_PARSE_SQL;
++    }
++  } else {
++    ret = OB_ERR_PARSE_SQL;
++  }
++  return ret;
++}
++
++int build_type_expr(ObRawExprFactory &factory, const ObObjType obj_type, ObRawExpr *&expr)
++{
++  int ret = OB_SUCCESS;
++  ObConstRawExpr *const_expr = NULL;
++  expr = NULL;
++  if (ObIntType == obj_type) {
++    ret = ObRawExprUtils::build_const_int_expr(factory, ObIntType, static_cast<int64_t>(0), const_expr);
++  } else if (ObDoubleType == obj_type) {
++    ret = ObRawExprUtils::build_const_double_expr(factory, ObDoubleType, 0.0, const_expr);
++  } else {
++    ret = ObRawExprUtils::build_const_string_expr(factory, ObVarcharType,
++                                                 ObString::make_string(""),
++                                                 ObCharset::get_system_collation(), const_expr);
++  }
++  if (OB_SUCC(ret)) {
++    expr = const_expr;
++  }
++  return ret;
++}
++
++int get_char_option(const ParseNode *value_node, ObString &option_value)
++{
++  int ret = OB_SUCCESS;
++  if (OB_FAIL(get_string_value(value_node, option_value))) {
++  } else if (OB_UNLIKELY(1 != option_value.length())) {
++    ret = OB_ERR_PARSE_SQL;
++  }
++  return ret;
++}
++} // namespace file_sql_private
++
++int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item)
++{
++  using namespace file_sql_private;
++  int ret = OB_SUCCESS;
++  ParseNode *func_node = NULL;
++  ParseNode *arg_node = NULL;
++  ParseNode *alias_node = NULL;
++  ObString func_name;
++  ObString raw_path;
++  ObFileSqlFormat format = FS_FMT_INVALID;
++  bool is_glob = false;
++  bool file_sql_enabled = false;
++  ObFileSqlOptions options;
++  ObFileTableDef *file_def = NULL;
++  ObValuesTableDef *values_def = NULL;
++  ObSEArray<ObFileSqlCell, 64> cells;
++  ObString table_name;
++  char path_buf[FILE_SQL_MAX_PATH_LEN + 1];
++  char head_buf[FILE_SQL_MAX_PATH_LEN + 1];
++  char real_buf[FILE_SQL_MAX_PATH_LEN + 1];
++  ObDMLStmt *stmt = get_stmt();
++  table_item = NULL;
++  LOG_ERROR("FILESQL enter", "type", table_node.type_, "num", table_node.num_child_, "children", table_node.children_);
++  if (OB_ISNULL(stmt) || OB_ISNULL(allocator_) || OB_ISNULL(session_info_) ||
++      OB_ISNULL(params_.expr_factory_)) {
++    ret = OB_ERR_UNEXPECTED;
++    LOG_WARN("unexpected null argument", K(ret), K(stmt), K(allocator_));
++  } else if (OB_UNLIKELY(T_FILE_TABLE_EXPRESSION != table_node.type_) ||
++             OB_UNLIKELY(3 != table_node.num_child_) || OB_ISNULL(table_node.children_) ||
++             OB_ISNULL(func_node = table_node.children_[0])) {
++    ret = OB_ERR_UNEXPECTED;
++    LOG_WARN("invalid file table parse node", K(ret), K(table_node.type_));
++  } else if (OB_ISNULL(func_node->str_value_) || OB_UNLIKELY(func_node->str_len_ <= 0)) {
++    LOG_ERROR("FILESQL no func name", "node_type", func_node->type_, "str", func_node->str_value_);
++    ret = OB_ERR_PARSE_SQL;
++  } else if (FALSE_IT(func_name.assign_ptr(func_node->str_value_,
++                                           static_cast<int32_t>(func_node->str_len_)))) {
++  } else if (0 == func_name.case_compare(ObString::make_string("read_csv"))) {
++    format = FS_FMT_CSV;
++  } else if (0 == func_name.case_compare(ObString::make_string("read_json"))) {
++    format = FS_FMT_JSONL;
++  } else if (0 == func_name.case_compare(ObString::make_string("read_ndjson"))) {
++    format = FS_FMT_JSONL;
++  } else if (0 == func_name.case_compare(ObString::make_string("read_parquet"))) {
++    format = FS_FMT_PARQUET;
++  } else if (0 == func_name.case_compare(ObString::make_string("glob"))) {
++    is_glob = true;
++  } else {
++    ret = OB_ERR_PARSE_SQL;
++    LOG_ERROR("FILESQL unknown func", K(ret), K(func_name));
++  }
++  LOG_ERROR("FILESQL name parsed", K(func_name), K(ret), "format", format, "glob", is_glob);
++  if (OB_SUCC(ret)) {
++    arg_node = table_node.children_[1];
++    alias_node = table_node.children_[2];
++    if (OB_NOT_NULL(arg_node) && OB_UNLIKELY(T_EXPR_LIST != arg_node->type_)) {
++      ret = OB_ERR_UNEXPECTED;
++      LOG_WARN("invalid file table argument list", K(ret));
++    } else if (OB_NOT_NULL(arg_node) && OB_NOT_NULL(arg_node->children_)) {
++      int64_t positional_cnt = 0;
++      for (int64_t i = 0; OB_SUCC(ret) && i < arg_node->num_child_; ++i) {
++        ParseNode *arg = arg_node->children_[i];
++        ParseNode *value_node = NULL;
++        ObString arg_name;
++        if (OB_NOT_NULL(arg) && T_EXPR_LIST == arg->type_ && 1 == arg->num_child_ &&
++            OB_NOT_NULL(arg->children_)) {
++          arg = arg->children_[0];
++        }
++        if (is_named_argument(arg, arg_name, value_node)) {
++          ObString str_value;
++          if (0 == arg_name.case_compare(ObString::make_string("header"))) {
++            bool header = true;
++            if (OB_FAIL(get_bool_value(params_, value_node, header))) {
++            } else {
++              options.has_header_ = true;
++              options.header_ = header;
++            }
++          } else if (0 == arg_name.case_compare(ObString::make_string("sample_size"))) {
++            int64_t sample_size = 0;
++            if (OB_FAIL(get_int_value(params_, value_node, sample_size))) {
++            } else if (-1 != sample_size) {
++              ret = OB_NOT_SUPPORTED;
++              LOG_WARN("only sample_size = -1 is supported", K(ret), K(sample_size));
++            } else {
++              options.has_sample_size_ = true;
++              options.sample_size_ = sample_size;
++            }
++          } else if (0 == arg_name.case_compare(ObString::make_string("format"))) {
++            if (OB_FAIL(get_string_value(value_node, str_value))) {
++            } else if (OB_FAIL(check_format_value(format, is_glob, str_value))) {
++              LOG_WARN("invalid format value", K(ret), K(str_value));
++            }
++          } else if (0 == arg_name.case_compare(ObString::make_string("delim")) ||
++                     0 == arg_name.case_compare(ObString::make_string("delimiter"))) {
++            if (OB_FAIL(get_char_option(value_node, str_value))) {
++            } else {
++              options.has_delim_ = true;
++              options.delim_ = str_value[0];
++            }
++          } else if (0 == arg_name.case_compare(ObString::make_string("quote"))) {
++            if (OB_FAIL(get_char_option(value_node, str_value))) {
++            } else {
++              options.has_quote_ = true;
++              options.quote_ = str_value[0];
++            }
++          } else if (0 == arg_name.case_compare(ObString::make_string("escape"))) {
++            if (OB_FAIL(get_char_option(value_node, str_value))) {
++            } else {
++              options.has_escape_ = true;
++              options.escape_ = str_value[0];
++            }
++          } else if (0 == arg_name.case_compare(ObString::make_string("nullstr"))) {
++            if (OB_FAIL(get_string_value(value_node, str_value))) {
++            } else {
++              options.has_nullstr_ = true;
++              options.nullstr_ = str_value;
++            }
++          } else {
++            ret = OB_ERR_PARSE_SQL;
++            LOG_WARN("unknown file table argument", K(ret), K(arg_name));
++          }
++        } else if (0 == positional_cnt) {
++          if (OB_FAIL(get_string_value(arg, raw_path))) {
++            LOG_WARN("file path is expected", K(ret), "arg_type",
++                     OB_ISNULL(arg) ? -1 : static_cast<int64_t>(arg->type_),
++                     "arg_num_child", OB_ISNULL(arg) ? -1 : arg->num_child_,
++                     "arg_str_len", OB_ISNULL(arg) ? -1 : arg->str_len_);
++          }
++        } else if (1 == positional_cnt) {
++          ObString fmt_value;
++          if (OB_FAIL(get_string_value(arg, fmt_value))) {
++            LOG_WARN("format value is expected", K(ret), "arg_type",
++                     OB_ISNULL(arg) ? -1 : static_cast<int64_t>(arg->type_));
++          } else if (OB_FAIL(check_format_value(format, is_glob, fmt_value))) {
++            LOG_WARN("invalid format value", K(ret), K(fmt_value));
++          }
++        } else {
++          ret = OB_ERR_PARSE_SQL;
++          LOG_WARN("too many file table arguments", K(ret));
++        }
++        if (OB_SUCC(ret)) {
++          ++positional_cnt;
++        }
++      }
++    }
++    if (OB_SUCC(ret) && OB_UNLIKELY(raw_path.empty())) {
++      ret = OB_ERR_PARSE_SQL;
++      LOG_WARN("empty file path", K(ret));
++    }
++  }
++  if (OB_SUCC(ret)) {
++    ObQueryCtx *query_ctx = NULL;
++    if (OB_ISNULL(query_ctx = get_stmt()->get_query_ctx())) {
++      ret = OB_ERR_UNEXPECTED;
++      LOG_WARN("query ctx is null", K(ret));
++    } else {
++      query_ctx->get_query_hint_for_update().get_global_hint().plan_cache_policy_ =
++          ObPlanCachePolicy::OB_USE_PLAN_CACHE_NONE;
++    }
++  }
++  if (OB_SUCC(ret)) {
++    if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
++      LOG_WARN("failed to get enable_file_sql", K(ret));
++    } else if (!file_sql_enabled) {
++      ret = OB_NOT_SUPPORTED;
++      LOG_WARN("file sql is disabled, please set enable_file_sql = true", K(ret));
++    }
++  }
++  if (OB_SUCC(ret) && OB_UNLIKELY(raw_path.length() > FILE_SQL_MAX_PATH_LEN)) {
++    ret = OB_INVALID_ARGUMENT;
++    LOG_WARN("file path is too long", K(ret), K(raw_path.length()));
++  }
++  if (OB_SUCC(ret)) {
++    MEMSET(path_buf, 0, sizeof(path_buf));
++    MEMCPY(path_buf, raw_path.ptr(), raw_path.length());
++  }
++  if (OB_SUCC(ret)) {
++    char *slash = NULL;
++    if (is_glob && OB_NOT_NULL(slash = strrchr(path_buf, '/'))) {
++      ObSqlString pattern;
++      const int64_t head_len = slash - path_buf;
++      MEMSET(head_buf, 0, sizeof(head_buf));
++      if (head_len > 0) {
++        MEMCPY(head_buf, path_buf, head_len);
++      } else {
++        MEMCPY(head_buf, "/", 1);
++      }
++      if (OB_ISNULL(realpath(head_buf, real_buf))) {
++        ret = OB_FILE_NOT_EXIST;
++        LOG_WARN("failed to resolve glob directory", K(ret), K(head_buf));
++      } else if (OB_FAIL(pattern.append_fmt("%s%s", real_buf, slash))) {
++        LOG_WARN("failed to build glob pattern", K(ret));
++      } else {
++        ObString secure_file_priv;
++        ObString actual_path(real_buf);
++        if (OB_FAIL(session_info_->get_secure_file_priv(secure_file_priv))) {
++          LOG_WARN("failed to get secure_file_priv", K(ret));
++        } else if (!session_info_->is_inner() &&
++                   OB_FAIL(ObResolverUtils::check_secure_path(secure_file_priv, actual_path))) {
++          LOG_WARN("glob directory is not allowed by secure_file_priv", K(ret));
++        } else {
++          file_def = static_cast<ObFileTableDef *>(allocator_->alloc(sizeof(ObFileTableDef)));
++          if (OB_ISNULL(file_def)) {
++            ret = OB_ALLOCATE_MEMORY_FAILED;
++          } else {
++            new (file_def) ObFileTableDef();
++            ObSEArray<ObString, 16> files;
++            ObFileSqlReader reader(*allocator_);
++            if (OB_FAIL(reader.glob_files(ObString(pattern.length(), pattern.ptr()), files))) {
++              if (OB_ITER_END == ret) {
++                ret = OB_SUCCESS;
++                files.reset();
++              } else {
++                LOG_WARN("failed to list files", K(ret));
++              }
++            }
++            if (OB_SUCC(ret)) {
++              file_def->format_ = FS_FMT_INVALID;
++              file_def->is_glob_ = true;
++              file_def->column_cnt_ = 1;
++              file_def->row_cnt_ = files.count();
++              file_def->columns_[0].name_ = ObString::make_string("file");
++              file_def->columns_[0].type_ = FS_TYPE_VARCHAR;
++              file_def->columns_[0].nullable_ = false;
++              if (OB_FAIL(alloc_string(*allocator_, real_buf, strlen(real_buf), file_def->path_))) {
++              }
++              for (int64_t i = 0; OB_SUCC(ret) && i < files.count(); ++i) {
++                ObFileSqlCell cell;
++                cell.text_ = files.at(i);
++                cell.is_null_ = false;
++                if (OB_FAIL(cells.push_back(cell))) {
++                  LOG_WARN("failed to push back glob cell", K(ret));
++                }
++              }
++            }
++          }
++        }
++      }
++    } else if (OB_ISNULL(realpath(path_buf, real_buf))) {
++      ret = OB_FILE_NOT_EXIST;
++      LOG_WARN("failed to resolve file path", K(ret), K(raw_path));
++    } else {
++      ObString secure_file_priv;
++      ObString actual_path(real_buf);
++      if (OB_FAIL(session_info_->get_secure_file_priv(secure_file_priv))) {
++        LOG_WARN("failed to get secure_file_priv", K(ret));
++      } else if (!session_info_->is_inner() &&
++                 OB_FAIL(ObResolverUtils::check_secure_path(secure_file_priv, actual_path))) {
++        LOG_WARN("file path is not allowed by secure_file_priv", K(ret));
++      } else if (OB_ISNULL(file_def = static_cast<ObFileTableDef *>(allocator_->alloc(sizeof(ObFileTableDef))))) {
++        ret = OB_ALLOCATE_MEMORY_FAILED;
++      } else {
++        new (file_def) ObFileTableDef();
++        ObFileSqlReader reader(*allocator_);
++        if (OB_FAIL(reader.read_file(actual_path, format, options, *file_def, cells))) {
++          LOG_WARN("failed to read file", K(ret), K(raw_path), K(format));
++        }
++      }
++    }
++  }
++  if (OB_SUCC(ret)) {
++    if (OB_ISNULL(values_def = static_cast<ObValuesTableDef *>(allocator_->alloc(sizeof(ObValuesTableDef))))) {
++      ret = OB_ALLOCATE_MEMORY_FAILED;
++    } else {
++      new (values_def) ObValuesTableDef();
++      if (OB_FAIL(build_file_table_values(*file_def, cells, *values_def))) {
++        LOG_WARN("failed to build file table values", K(ret));
++      } else if (values_def->access_exprs_.count() > 0) {
++        if (OB_FAIL(try_add_cast_to_values(values_def->column_types_, values_def->access_exprs_))) {
++          LOG_WARN("failed to add cast for file table values", K(ret));
++        } else if (OB_FAIL(compute_values_table_row_count(*values_def))) {
++          LOG_WARN("failed to compute values row count", K(ret));
++        } else if (OB_FAIL(estimate_values_table_stats(*values_def))) {
++          LOG_WARN("failed to estimate values stats", K(ret));
++        }
++      }
++    }
++  }
++  if (OB_SUCC(ret)) {
++    ObSqlString name;
++    const uint64_t table_id = generate_table_id();
++    if (OB_NOT_NULL(alias_node)) {
++      if (OB_ISNULL(alias_node->str_value_) || alias_node->str_len_ <= 0) {
++        ret = OB_ERR_PARSE_SQL;
++      } else if (OB_FAIL(alloc_string(*allocator_, alias_node->str_value_,
++                                     alias_node->str_len_, table_name))) {
++      }
++    } else if (OB_FAIL(name.assign_fmt("file_table_%lu", table_id))) {
++      LOG_WARN("failed to build file table name", K(ret));
++    } else if (OB_FAIL(alloc_string(*allocator_, name.ptr(), name.length(), table_name))) {
++    }
++    if (OB_FAIL(ret)) {
++    } else if (OB_ISNULL(table_item = ObDMLStmt::create_table_item(*allocator_))) {
++      ret = OB_ALLOCATE_MEMORY_FAILED;
++    } else {
++      int64_t assigned_table_id = static_cast<int64_t>(table_id);
++      table_item->type_ = TableItem::VALUES_TABLE;
++      table_item->table_id_ = table_id;
++      table_item->table_name_ = table_name;
++      table_item->alias_name_ = table_name;
++      table_item->is_view_table_ = false;
++      table_item->is_system_table_ = false;
++      table_item->values_table_def_ = values_def;
++      table_item->file_table_def_ = file_def;
++      if (OB_FAIL(stmt->add_table_item(session_info_, table_item))) {
++        LOG_WARN("failed to add file table item", K(ret));
++      } else if (OB_FAIL(generate_file_table_column_items(*values_def, *table_item))) {
++        LOG_WARN("failed to generate file table column items", K(ret));
++      }
++      UNUSED(assigned_table_id);
++    }
++  }
++  return ret;
++}
++
++int ObDMLResolver::build_file_sql_value_expr(const ObFileSqlType file_type,
++                                             const ObFileSqlCell &cell,
++                                             ObRawExpr *&expr)
++{
++  int ret = OB_SUCCESS;
++  expr = NULL;
++  if (OB_ISNULL(params_.expr_factory_)) {
++    ret = OB_ERR_UNEXPECTED;
++  } else if (cell.is_null_) {
++    if (OB_FAIL(ObRawExprUtils::build_null_expr(*params_.expr_factory_, expr))) {
++      LOG_WARN("failed to build null expr", K(ret));
++    }
++  } else if (FS_TYPE_BIGINT == file_type || FS_TYPE_BOOLEAN == file_type) {
++    int64_t value = 0;
++    ObConstRawExpr *const_expr = NULL;
++    if (FS_TYPE_BOOLEAN == file_type) {
++      bool bool_value = false;
++      if (0 == cell.text_.case_compare(ObString::make_string("true")) ||
++          0 == cell.text_.compare(ObString::make_string("1"))) {
++        bool_value = true;
++      }
++      value = bool_value ? 1 : 0;
++    } else {
++      value = ObFileSqlValueType::parse_int_text(cell.text_.ptr(), cell.text_.length());
++    }
++    if (OB_SUCC(ret)) {
++      if (OB_FAIL(ObRawExprUtils::build_const_int_expr(*params_.expr_factory_, ObIntType,
++                                                       value, const_expr))) {
++        LOG_WARN("failed to build int const expr", K(ret));
++      } else {
++        expr = const_expr;
++      }
++    }
++  } else if (FS_TYPE_DOUBLE == file_type) {
++    double value = 0.0;
++    ObConstRawExpr *const_expr = NULL;
++    value = ObFileSqlValueType::parse_double_text(cell.text_.ptr(), cell.text_.length());
++    if (OB_FAIL(ObRawExprUtils::build_const_double_expr(*params_.expr_factory_, ObDoubleType,
++                                                        value, const_expr))) {
++      LOG_WARN("failed to build double const expr", K(ret));
++    } else {
++      expr = const_expr;
++    }
++  } else {
++    ObConstRawExpr *const_expr = NULL;
++    if (OB_FAIL(ObRawExprUtils::build_const_string_expr(*params_.expr_factory_, ObVarcharType,
++                                                        cell.text_,
++                                                        ObCharset::get_system_collation(),
++                                                        const_expr))) {
++      LOG_WARN("failed to build string const expr", K(ret));
++    } else {
++      expr = const_expr;
++    }
++  }
++  return ret;
++}
++
++int ObDMLResolver::build_file_table_values(const ObFileTableDef &file_def,
++                                           const common::ObIArray<ObFileSqlCell> &cells,
++                                           ObValuesTableDef &table_values)
++{
++  using namespace file_sql_private;
++  int ret = OB_SUCCESS;
++  const int64_t column_cnt = file_def.column_cnt_;
++  if (OB_ISNULL(params_.expr_factory_) || OB_UNLIKELY(column_cnt <= 0) ||
++      OB_UNLIKELY(column_cnt > OB_FILE_MAX_COLUMN_CNT)) {
++    ret = OB_ERR_UNEXPECTED;
++    LOG_WARN("invalid file table column count", K(ret), K(column_cnt));
++  } else if (OB_UNLIKELY(cells.count() % column_cnt != 0)) {
++    ret = OB_ERR_UNEXPECTED;
++    LOG_WARN("invalid file table cell count", K(ret), K(cells.count()), K(column_cnt));
++  } else {
++    table_values.column_cnt_ = column_cnt;
++    table_values.row_cnt_ = cells.count() / column_cnt;
++    table_values.access_type_ = ObValuesTableDef::ACCESS_EXPR;
++    table_values.is_const_ = true;
++    for (int64_t i = 0; OB_SUCC(ret) && i < cells.count(); ++i) {
++      ObRawExpr *expr = NULL;
++      if (OB_FAIL(build_file_sql_value_expr(file_def.columns_[i % column_cnt].type_,
++                                            cells.at(i), expr))) {
++        LOG_WARN("failed to build file cell expr", K(ret), K(i));
++      } else if (OB_ISNULL(expr)) {
++        ret = OB_ERR_UNEXPECTED;
++      } else if (OB_FAIL(table_values.access_exprs_.push_back(expr))) {
++        LOG_WARN("failed to push back file cell expr", K(ret));
++      }
++    }
++    for (int64_t i = 0; OB_SUCC(ret) && i < column_cnt; ++i) {
++      ObRawExprResType res_type;
++      ObRawExpr *type_expr = NULL;
++      const ObObjType obj_type = storage_type(file_def.columns_[i].type_);
++      if (OB_FAIL(build_type_expr(*params_.expr_factory_, obj_type, type_expr))) {
++        LOG_WARN("failed to build type expr", K(ret));
++      } else if (OB_ISNULL(type_expr)) {
++        ret = OB_ERR_UNEXPECTED;
++      } else {
++        res_type = type_expr->get_result_type();
++        if (OB_FAIL(table_values.column_types_.push_back(res_type))) {
++          LOG_WARN("failed to push back file table column type", K(ret));
++        }
++      }
++    }
++  }
++  return ret;
++}
++
++int ObDMLResolver::generate_file_table_column_items(const ObValuesTableDef &table_values,
++                                                    TableItem &table_item)
++{
++  int ret = OB_SUCCESS;
++  ObDMLStmt *stmt = get_stmt();
++  const ObFileTableDef *file_def = table_item.file_table_def_;
++  if (OB_ISNULL(stmt) || OB_ISNULL(params_.expr_factory_) || OB_ISNULL(file_def)) {
++    ret = OB_ERR_UNEXPECTED;
++  } else if (OB_UNLIKELY(table_values.column_types_.count() != file_def->column_cnt_)) {
++    ret = OB_ERR_UNEXPECTED;
++    LOG_WARN("column type count mismatch", K(ret), K(table_values.column_types_.count()),
++             K(file_def->column_cnt_));
++  }
++  for (int64_t i = 0; OB_SUCC(ret) && i < file_def->column_cnt_; ++i) {
++    ObColumnRefRawExpr *col_expr = NULL;
++    ColumnItem column_item;
++    ObString column_name = file_def->columns_[i].name_;
++    if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_REF_COLUMN, col_expr))) {
++      LOG_WARN("failed to create column ref expr", K(ret));
++    } else if (OB_ISNULL(col_expr)) {
++      ret = OB_ERR_UNEXPECTED;
++    } else {
++      col_expr->set_ref_id(table_item.table_id_, i + OB_APP_MIN_COLUMN_ID);
++      col_expr->set_result_type(table_values.column_types_.at(i));
++      col_expr->add_flag(IS_COLUMN);
++      if (file_def->columns_[i].nullable_) {
++        col_expr->unset_result_flag(NOT_NULL_FLAG);
++      } else {
++        col_expr->set_result_flag(NOT_NULL_FLAG);
++      }
++      if (table_item.table_name_.empty()) {
++        col_expr->set_column_name(column_name);
++      } else {
++        col_expr->set_column_attr(table_item.table_name_, column_name);
++      }
++      col_expr->set_database_name(table_item.database_name_);
++      column_item.expr_ = col_expr;
++      column_item.table_id_ = col_expr->get_table_id();
++      column_item.column_id_ = col_expr->get_column_id();
++      column_item.column_name_ = col_expr->get_column_name();
++      if (OB_FAIL(col_expr->extract_info())) {
++        LOG_WARN("failed to extract column info", K(ret));
++      } else if (OB_FAIL(stmt->add_column_item(column_item))) {
++        LOG_WARN("failed to add column item", K(ret));
++      }
++    }
++  }
++  return ret;
++}
++
+ int ObDMLResolver::resolve_values_table_for_select(const ParseNode &table_node,
+                                                    ObValuesTableDef &table_def)
+ {
+diff --git a/src/sql/resolver/dml/ob_dml_resolver.h b/src/sql/resolver/dml/ob_dml_resolver.h
+index 527320d0b..3ba36d4f3 100644
+--- a/src/sql/resolver/dml/ob_dml_resolver.h
++++ b/src/sql/resolver/dml/ob_dml_resolver.h
+@@ -17,6 +17,7 @@
+ #ifndef OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
+ #define OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
+ #include "sql/resolver/dml/ob_dml_stmt.h"
++#include "sql/resolver/dml/ob_file_sql_utils.h"
+ #include "sql/resolver/dml/ob_column_namespace_checker.h"
+ #include "sql/resolver/ob_stmt_resolver.h"
+ #include "sql/resolver/expr/ob_raw_expr_resolver_impl.h"
+@@ -778,6 +779,16 @@ private:
+   bool check_expr_has_colref(ObRawExpr *expr);
+ 
+   int resolve_values_table_item(const ParseNode &table_node, TableItem *&table_item);
++  // file table (file as database) support
++  int resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item);
++  int build_file_sql_value_expr(const ObFileSqlType file_type,
++                                const ObFileSqlCell &cell,
++                                ObRawExpr *&expr);
++  int build_file_table_values(const ObFileTableDef &file_def,
++                              const common::ObIArray<ObFileSqlCell> &cells,
++                              ObValuesTableDef &table_values);
++  int generate_file_table_column_items(const ObValuesTableDef &table_values,
++                                       TableItem &table_item);
+   int resolve_values_table_for_select(const ParseNode &table_node,
+                                       ObValuesTableDef &table_values);
+   int resolve_values_table_for_insert(const ParseNode &table_node,
+diff --git a/src/sql/resolver/dml/ob_dml_stmt.h b/src/sql/resolver/dml/ob_dml_stmt.h
+index bd3380e4a..4ecabc67b 100644
+--- a/src/sql/resolver/dml/ob_dml_stmt.h
++++ b/src/sql/resolver/dml/ob_dml_stmt.h
+@@ -27,6 +27,7 @@
+ #include "sql/ob_sql_define.h"
+ #include "sql/resolver/dml/ob_sql_hint.h"
+ #include "sql/ob_sql_utils.h"
++#include "sql/resolver/dml/ob_file_table_def.h"
+ #include "sql/resolver/dml/ob_raw_expr_sets.h"
+ #include "sql/resolver/expr/ob_raw_expr_copier.h"
+ #include "sql/resolver/dml/ob_stmt_expr_visitor.h"
+@@ -155,6 +156,7 @@ struct TableItem
+     json_table_def_ = nullptr;
+     table_type_ = MAX_TABLE_TYPE;
+     values_table_def_ = NULL;
++    file_table_def_ = NULL;
+     sample_info_ = nullptr;
+   }
+ 
+@@ -224,6 +226,7 @@ struct TableItem
+   bool is_function_table() const { return FUNCTION_TABLE == type_; }
+   bool is_json_table() const { return JSON_TABLE == type_; }  // json_table_def_->table_type_ == MulModeTableType::OB_ORA_JSON_TABLE_TYPE
+   bool is_values_table() const { return VALUES_TABLE == type_; }//used to mark values statement: values row(1,2), row(3,4);
++  bool is_file_table() const { return VALUES_TABLE == type_ && NULL != file_table_def_; }
+ 
+   bool is_lateral_table() const { return LATERAL_TABLE == type_; }
+   bool is_extended_all_or_user_sys_view() const
+@@ -303,6 +306,8 @@ struct TableItem
+   ObJsonTableDef *json_table_def_;
+   // values table
+   ObValuesTableDef *values_table_def_;
++  // file table (read_csv/read_json/read_parquet/glob), rows are expanded into the values table
++  ObFileTableDef *file_table_def_;
+   // sample scan infos
+   SampleInfo *sample_info_;
+ };
+diff --git a/src/sql/resolver/dml/ob_file_sql_utils.cpp b/src/sql/resolver/dml/ob_file_sql_utils.cpp
+new file mode 100644
+index 000000000..56efb52c2
+--- /dev/null
++++ b/src/sql/resolver/dml/ob_file_sql_utils.cpp
+@@ -0,0 +1,2424 @@
++/**
++ * Copyright (c) 2025 OceanBase.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#define USING_LOG_PREFIX SQL_RESV
++
++#include "sql/resolver/dml/ob_file_sql_utils.h"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <glob.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <unistd.h>
++#include <sys/stat.h>
++
++#include <algorithm>
++#include <string>
++#include <vector>
++
++#include "lib/ob_errno.h"
++#include "lib/utility/utility.h"
++
++namespace oceanbase
++{
++namespace sql
++{
++using namespace common;
++
++namespace
++{
++
++// Files bigger than this are rejected: the resolver has to keep the rows in
++// memory until the statement finishes.
++const int64_t OB_FILE_SQL_MAX_CONTENT_SIZE = 512LL << 20;
++const int64_t OB_FILE_SQL_MAX_ROW_CNT = 64LL << 20;
++
++inline bool is_digit(const char c) { return c >= '0' && c <= '9'; }
++
++int alloc_string(ObIAllocator &alloc,
++                 const char *src,
++                 const int64_t len,
++                 ObString &dst)
++{
++  int ret = OB_SUCCESS;
++  char *buf = NULL;
++  if (OB_UNLIKELY(len < 0)) {
++    ret = OB_INVALID_ARGUMENT;
++  } else if (0 == len) {
++    dst.reset();
++  } else if (OB_ISNULL(buf = static_cast<char *>(alloc.alloc(len)))) {
++    ret = OB_ALLOCATE_MEMORY_FAILED;
++    LOG_WARN("allocate memory failed", K(ret), K(len));
++  } else {
++    memcpy(buf, src, len);
++    dst.assign_ptr(buf, len);
++  }
++  return ret;
++}
++
++bool parse_int64_checked(const char *p, const int64_t len, int64_t &v)
++{
++  bool bret = true;
++  int64_t i = 0;
++  bool neg = false;
++  uint64_t mag = 0;
++  if (i < len && ('-' == p[i] || '+' == p[i])) {
++    neg = ('-' == p[i]);
++    ++i;
++  }
++  if (i >= len) {
++    bret = false;
++  }
++  for (; bret && i < len; ++i) {
++    if (!is_digit(p[i])) {
++      bret = false;
++    } else if (__builtin_mul_overflow(mag, 10ULL, &mag)
++               || __builtin_add_overflow(mag, static_cast<uint64_t>(p[i] - '0'), &mag)) {
++      bret = false;
++    }
++  }
++  if (bret) {
++    if (neg) {
++      if (mag > static_cast<uint64_t>(INT64_MAX) + 1ULL) {
++        bret = false;
++      } else {
++        v = static_cast<int64_t>(0 - mag);
++      }
++    } else {
++      if (mag > static_cast<uint64_t>(INT64_MAX)) {
++        bret = false;
++      } else {
++        v = static_cast<int64_t>(mag);
++      }
++    }
++  }
++  return bret;
++}
++
++// Syntax check of a decimal number, strtod() is too permissive (hex, inf, nan
++// and leading white space).
++bool number_syntax_ok(const char *p, const int64_t len)
++{
++  int64_t i = 0;
++  int64_t digits = 0;
++  bool bret = true;
++  if (i < len && ('-' == p[i] || '+' == p[i])) {
++    ++i;
++  }
++  for (; i < len && is_digit(p[i]); ++i) {
++    ++digits;
++  }
++  if (i < len && '.' == p[i]) {
++    ++i;
++    for (; i < len && is_digit(p[i]); ++i) {
++      ++digits;
++    }
++  }
++  if (0 == digits) {
++    bret = false;
++  } else if (i < len && ('e' == p[i] || 'E' == p[i])) {
++    ++i;
++    if (i < len && ('-' == p[i] || '+' == p[i])) {
++      ++i;
++    }
++    int64_t exp_digits = 0;
++    for (; i < len && is_digit(p[i]); ++i) {
++      ++exp_digits;
++    }
++    if (0 == exp_digits) {
++      bret = false;
++    }
++  }
++  return bret && i == len;
++}
++
++bool parse_double_checked(const char *p, const int64_t len, double &v)
++{
++  bool bret = false;
++  char buf[64];
++  char *endptr = NULL;
++  if (len > 0 && len < static_cast<int64_t>(sizeof(buf)) && number_syntax_ok(p, len)) {
++    memcpy(buf, p, len);
++    buf[len] = '\0';
++    errno = 0;
++    v = strtod(buf, &endptr);
++    if (endptr == buf + len && 0 == errno) {
++      bret = true;
++    }
++  }
++  return bret;
++}
++
++bool is_leap_year(const int64_t year)
++{
++  return (0 == year % 4 && 0 != year % 100) || 0 == year % 400;
++}
++
++int64_t days_of_month(const int64_t year, const int64_t month)
++{
++  static const int64_t days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
++  int64_t cnt = 0;
++  if (month >= 1 && month <= 12) {
++    cnt = days[month - 1];
++    if (2 == month && is_leap_year(year)) {
++      cnt = 29;
++    }
++  }
++  return cnt;
++}
++
++bool parse_ndigits(const char *p, const int64_t n, int64_t &v)
++{
++  bool bret = true;
++  v = 0;
++  for (int64_t i = 0; bret && i < n; ++i) {
++    if (!is_digit(p[i])) {
++      bret = false;
++    } else {
++      v = v * 10 + (p[i] - '0');
++    }
++  }
++  return bret;
++}
++
++bool is_date_syntax(const char *p, const int64_t len)
++{
++  bool bret = false;
++  int64_t year = 0;
++  int64_t month = 0;
++  int64_t day = 0;
++  if (10 == len && '-' == p[4] && '-' == p[7]
++      && parse_ndigits(p, 4, year)
++      && parse_ndigits(p + 5, 2, month)
++      && parse_ndigits(p + 8, 2, day)
++      && year >= 1 && month >= 1 && month <= 12
++      && day >= 1 && day <= days_of_month(year, month)) {
++    bret = true;
++  }
++  return bret;
++}
++
++bool is_time_syntax(const char *p, const int64_t len)
++{
++  bool bret = false;
++  int64_t hour = 0;
++  int64_t minute = 0;
++  int64_t second = 0;
++  if (len >= 8 && ':' == p[2] && ':' == p[5]
++      && parse_ndigits(p, 2, hour)
++      && parse_ndigits(p + 3, 2, minute)
++      && parse_ndigits(p + 6, 2, second)
++      && hour <= 23 && minute <= 59 && second <= 59) {
++    int64_t i = 8;
++    bool frac_ok = true;
++    if (i < len && '.' == p[i]) {
++      ++i;
++      int64_t frac_digits = 0;
++      for (; i < len && is_digit(p[i]); ++i) {
++        ++frac_digits;
++      }
++      if (0 == frac_digits || frac_digits > 9) {
++        frac_ok = false;
++      }
++    }
++    bret = frac_ok && i == len;
++  }
++  return bret;
++}
++
++bool is_datetime_syntax(const char *p, const int64_t len)
++{
++  bool bret = false;
++  if (len >= 19 && is_date_syntax(p, 10) && (' ' == p[10] || 'T' == p[10])) {
++    bret = is_time_syntax(p + 11, len - 11);
++  }
++  return bret;
++}
++
++struct CsvField
++{
++  CsvField() : ptr_(NULL), len_(0) {}
++  char *ptr_;
++  int64_t len_;
++};
++
++void trim_right(char *&ptr, int64_t &len)
++{
++  while (len > 0 && (' ' == ptr[len - 1] || '\t' == ptr[len - 1])) {
++    --len;
++  }
++}
++
++// Appends the text of a field to the cell matrix, empty texts are NULLs.
++int add_cell(ObIAllocator &alloc,
++             const char *ptr,
++             const int64_t len,
++             const ObFileSqlOptions &options,
++             ObFileSqlCell &cell)
++{
++  int ret = OB_SUCCESS;
++  bool is_null = (0 == len);
++  if (!is_null && options.has_nullstr_ && options.nullstr_.length() == len
++      && 0 == strncmp(ptr, options.nullstr_.ptr(), len)) {
++    is_null = true;
++  }
++  cell.is_null_ = is_null;
++  if (!is_null) {
++    ret = alloc_string(alloc, ptr, len, cell.text_);
++  }
++  return ret;
++}
++
++int64_t last_dot_pos(const ObString &path)
++{
++  int64_t pos = -1;
++  for (int64_t i = path.length() - 1; i >= 0; --i) {
++    if ('.' == path[i]) {
++      pos = i;
++      break;
++    }
++  }
++  return pos;
++}
++
++}  // namespace
++
++bool ObFileSqlValueType::is_bool_text(const char *ptr, const int64_t len)
++{
++  bool bret = false;
++  if (1 == len) {
++    bret = ('0' == ptr[0] || '1' == ptr[0]);
++  } else if (4 == len) {
++    bret = (0 == strncasecmp(ptr, "true", 4));
++  } else if (5 == len) {
++    bret = (0 == strncasecmp(ptr, "false", 5));
++  }
++  return bret;
++}
++
++bool ObFileSqlValueType::is_int_text(const char *ptr, const int64_t len)
++{
++  int64_t v = 0;
++  return parse_int64_checked(ptr, len, v);
++}
++
++bool ObFileSqlValueType::is_double_text(const char *ptr, const int64_t len)
++{
++  double v = 0.0;
++  return parse_double_checked(ptr, len, v);
++}
++
++bool ObFileSqlValueType::is_date_text(const char *ptr, const int64_t len)
++{
++  return is_date_syntax(ptr, len);
++}
++
++bool ObFileSqlValueType::is_datetime_text(const char *ptr, const int64_t len)
++{
++  return is_datetime_syntax(ptr, len);
++}
++
++void ObFileSqlValueType::normalize_datetime_text(char *ptr, const int64_t len)
++{
++  if (len > 10 && 'T' == ptr[10]) {
++    ptr[10] = ' ';
++  }
++}
++
++int64_t ObFileSqlValueType::parse_int_text(const char *ptr, const int64_t len)
++{
++  int64_t v = 0;
++  if (!parse_int64_checked(ptr, len, v)) {
++    v = 0;
++  }
++  return v;
++}
++
++double ObFileSqlValueType::parse_double_text(const char *ptr, const int64_t len)
++{
++  double v = 0.0;
++  if (!parse_double_checked(ptr, len, v)) {
++    v = 0.0;
++  }
++  return v;
++}
++
++int ObFileSqlReader::json_unescape(const char esc, char *out, int64_t &out_len)
++{
++  int ret = OB_SUCCESS;
++  out_len = 1;
++  switch (esc) {
++    case '"': out[0] = '"'; break;
++    case '\\': out[0] = '\\'; break;
++    case '/': out[0] = '/'; break;
++    case 'b': out[0] = '\b'; break;
++    case 'f': out[0] = '\f'; break;
++    case 'n': out[0] = '\n'; break;
++    case 'r': out[0] = '\r'; break;
++    case 't': out[0] = '\t'; break;
++    default:
++      ret = OB_NOT_SUPPORTED;
++      LOG_WARN("unsupported json escape", K(ret), K(esc));
++      break;
++  }
++  return ret;
++}
++
++int ObFileSqlReader::detect_format_by_extension(const ObString &path,
++                                                ObFileSqlFormat &format)
++{
++  int ret = OB_SUCCESS;
++  const char *ptr = path.ptr();
++  const int64_t len = path.length();
++  const int64_t dot = last_dot_pos(path);
++  if (OB_UNLIKELY(len <= 0 || dot < 0 || dot + 1 >= len)) {
++    ret = OB_INVALID_ARGUMENT;
++    LOG_WARN("can not detect the file format by the extension", K(ret), K(path));
++  } else {
++    const char *ext = ptr + dot + 1;
++    const int64_t ext_len = len - dot - 1;
++    if (7 == ext_len && 0 == strncasecmp(ext, "parquet", 7)) {
++      format = FS_FMT_PARQUET;
++    } else if ((4 == ext_len && 0 == strncasecmp(ext, "json", 4))
++               || (5 == ext_len && 0 == strncasecmp(ext, "jsonl", 5))
++               || (6 == ext_len && 0 == strncasecmp(ext, "ndjson", 6))) {
++      format = FS_FMT_JSONL;
++    } else if ((3 == ext_len && 0 == strncasecmp(ext, "csv", 3))
++               || (3 == ext_len && 0 == strncasecmp(ext, "tsv", 3))
++               || (3 == ext_len && 0 == strncasecmp(ext, "txt", 3))) {
++      format = FS_FMT_CSV;
++    } else {
++      ret = OB_INVALID_ARGUMENT;
++      LOG_WARN("unsupported file extension", K(ret), K(path));
++    }
++  }
++  return ret;
++}
++
++int ObFileSqlReader::load_file_content(const ObString &path,
++                                       char *&buf,
++                                       int64_t &size)
++{
++  int ret = OB_SUCCESS;
++  int fd = -1;
++  buf = NULL;
++  size = 0;
++  char *file_name = NULL;
++  const int64_t name_len = path.length();
++  if (OB_ISNULL(file_name = static_cast<char *>(allocator_.alloc(name_len + 1)))) {
++    ret = OB_ALLOCATE_MEMORY_FAILED;
++    LOG_WARN("allocate memory failed", K(ret));
++  } else {
++    memcpy(file_name, path.ptr(), name_len);
++    file_name[name_len] = '\0';
++    if (-1 == (fd = ::open(file_name, O_RDONLY))) {
++      ret = OB_FILE_NOT_EXIST;
++      LOG_WARN("open file failed", K(ret), K(path), K(errno));
++    }
++  }
++  if (OB_SUCC(ret)) {
++    struct stat file_stat;
++    if (0 != ::fstat(fd, &file_stat)) {
++      ret = OB_IO_ERROR;
++      LOG_WARN("fstat failed", K(ret), K(path), K(errno));
++    } else if (!S_ISREG(file_stat.st_mode)) {
++      ret = OB_INVALID_ARGUMENT;
++      LOG_WARN("only regular files are supported", K(ret), K(path));
++    } else if (file_stat.st_size > OB_FILE_SQL_MAX_CONTENT_SIZE) {
++      ret = OB_SIZE_OVERFLOW;
++      LOG_WARN("the file is too big", K(ret), K(path), K(file_stat.st_size),
++               K(OB_FILE_SQL_MAX_CONTENT_SIZE));
++    } else if (0 == file_stat.st_size) {
++      ret = OB_ITER_END;
++      LOG_WARN("the file is empty", K(ret), K(path));
++    } else if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(file_stat.st_size + 1)))) {
++      ret = OB_ALLOCATE_MEMORY_FAILED;
++      LOG_WARN("allocate memory failed", K(ret), K(file_stat.st_size));
++    } else {
++      int64_t readed = 0;
++      while (readed < file_stat.st_size) {
++        const ssize_t n = ::read(fd, buf + readed, file_stat.st_size - readed);
++        if (n < 0) {
++          if (EINTR == errno) {
++            continue;
++          }
++          ret = OB_IO_ERROR;
++          LOG_WARN("read file failed", K(ret), K(path), K(errno));
++          break;
++        } else if (0 == n) {
++          break;
++        } else {
++          readed += n;
++        }
++      }
++      if (OB_SUCC(ret)) {
++        buf[readed] = '\0';
++        size = readed;
++      }
++    }
++  }
++  if (fd >= 0) {
++    ::close(fd);
++    fd = -1;
++  }
++  return ret;
++}
++
++int ObFileSqlReader::parse_csv(char *buf,
++                               const int64_t size,
++                               const ObFileSqlOptions &options,
++                               ObFileTableDef &def,
++                               ObIArray<ObFileSqlCell> &cells)
++{
++  int ret = OB_SUCCESS;
++  const char delim = options.has_delim_ ? options.delim_ : ',';
++  const char quote = options.has_quote_ ? options.quote_ : '"';
++  int64_t pos = 0;
++  if (size >= 3 && static_cast<unsigned char>(buf[0]) == 0xEF
++      && static_cast<unsigned char>(buf[1]) == 0xBB
++      && static_cast<unsigned char>(buf[2]) == 0xBF) {
++    pos = 3;
++  }
++  std::vector<CsvField> fields;
++  std::vector<int64_t> row_offsets;
++  fields.reserve(64);
++  row_offsets.reserve(64);
++  while (pos < size) {
++    if ('\n' == buf[pos]) {
++      ++pos;
++      continue;
++    } else if ('\r' == buf[pos] && pos + 1 < size && '\n' == buf[pos + 1]) {
++      pos += 2;
++      continue;
++    }
++    row_offsets.push_back(static_cast<int64_t>(fields.size()));
++    bool row_done = false;
++    while (!row_done) {
++      CsvField field;
++      if (pos < size && buf[pos] == quote) {
++        const int64_t out_start = pos + 1;
++        int64_t out = pos + 1;
++        ++pos;
++        while (pos < size) {
++          const char c = buf[pos];
++          if (c == quote) {
++            if (pos + 1 < size && buf[pos + 1] == quote) {
++              buf[out++] = quote;
++              pos += 2;
++            } else {
++              ++pos;
++              break;
++            }
++          } else if ('\r' == c && pos + 1 < size && '\n' == buf[pos + 1]) {
++            // normalize the CRLF inside a quoted field to LF
++            ++pos;
++          } else {
++            buf[out++] = c;
++            ++pos;
++          }
++        }
++        // Trailing characters behind the closing quote are kept as they are.
++        while (pos < size && buf[pos] != delim && '\n' != buf[pos] && '\r' != buf[pos]) {
++          buf[out++] = buf[pos++];
++        }
++        field.ptr_ = buf + out_start;
++        field.len_ = out - out_start;
++      } else {
++        const int64_t start = pos;
++        while (pos < size && buf[pos] != delim && '\n' != buf[pos] && '\r' != buf[pos]) {
++          ++pos;
++        }
++        field.ptr_ = buf + start;
++        field.len_ = pos - start;
++      }
++      fields.push_back(field);
++      if (pos < size && buf[pos] == delim) {
++        ++pos;
++        row_done = false;
++      } else {
++        row_done = true;
++      }
++    }
++    if (pos < size && '\r' == buf[pos]) {
++      ++pos;
++    }
++    if (pos < size && '\n' == buf[pos]) {
++      ++pos;
++    }
++  }
++  // The column count comes from the first row, every row has to match it.
++  const int64_t row_cnt = static_cast<int64_t>(row_offsets.size());
++  int64_t column_cnt = 0;
++  if (OB_UNLIKELY(row_cnt <= 0)) {
++    ret = OB_ITER_END;
++    LOG_WARN("the csv file has no row", K(ret), K(def.path_));
++  } else if (row_cnt > 1) {
++    column_cnt = row_offsets.at(1) - row_offsets.at(0);
++  } else {
++    column_cnt = static_cast<int64_t>(fields.size());
++  }
++  if (OB_SUCC(ret)) {
++    for (int64_t i = 0; i < row_cnt; ++i) {
++      const int64_t field_cnt = (i + 1 < row_cnt ? row_offsets.at(i + 1)
++                                                : static_cast<int64_t>(fields.size()))
++                                - row_offsets.at(i);
++      if (field_cnt != column_cnt) {
++        ret = OB_INVALID_ARGUMENT;
++        LOG_WARN("the field count of the row does not match the header", K(ret),
++                 K(i), K(field_cnt), K(column_cnt), K(def.path_));
++        break;
++      }
++    }
++  }
++  if (OB_SUCC(ret) && (0 >= column_cnt || column_cnt > OB_FILE_MAX_COLUMN_CNT)) {
++    ret = OB_INVALID_ARGUMENT;
++    LOG_WARN("invalid column count", K(ret), K(column_cnt), K(def.path_));
++  }
++  if (OB_SUCC(ret)) {
++    def.column_cnt_ = column_cnt;
++    bool has_header = options.has_header_ ? options.header_ : false;
++    if (!options.has_header_ && row_cnt > 1) {
++      bool header_like = false;
++      for (int64_t c = 0; !header_like && c < column_cnt; ++c) {
++        const CsvField &first = fields.at(row_offsets.at(0) + c);
++        const ObFileSqlType candidates[] = {
++            FS_TYPE_BOOLEAN, FS_TYPE_BIGINT, FS_TYPE_DOUBLE, FS_TYPE_DATE, FS_TYPE_DATETIME
++        };
++        for (int64_t k = 0;
++             k < static_cast<int64_t>(sizeof(candidates) / sizeof(candidates[0])) && !header_like;
++             ++k) {
++          const ObFileSqlType type = candidates[k];
++          bool all_match = true;
++          for (int64_t r = 1; all_match && r < row_cnt; ++r) {
++            const CsvField &field = fields.at(row_offsets.at(r) + c);
++            if (0 == field.len_) {
++              continue;
++            }
++            switch (type) {
++              case FS_TYPE_BOOLEAN:
++                all_match = ObFileSqlValueType::is_bool_text(field.ptr_, field.len_);
++                break;
++              case FS_TYPE_BIGINT:
++                all_match = ObFileSqlValueType::is_int_text(field.ptr_, field.len_);
++                break;
++              case FS_TYPE_DOUBLE:
++                all_match = ObFileSqlValueType::is_double_text(field.ptr_, field.len_);
++                break;
++              case FS_TYPE_DATE:
++                all_match = ObFileSqlValueType::is_date_text(field.ptr_, field.len_);
++                break;
++              default:
++                all_match = ObFileSqlValueType::is_datetime_text(field.ptr_, field.len_);
++                break;
++            }
++          }
++          if (all_match) {
++            bool first_match = false;
++            switch (type) {
++              case FS_TYPE_BOOLEAN:
++                first_match = ObFileSqlValueType::is_bool_text(first.ptr_, first.len_);
++                break;
++              case FS_TYPE_BIGINT:
++                first_match = ObFileSqlValueType::is_int_text(first.ptr_, first.len_);
++                break;
++              case FS_TYPE_DOUBLE:
++                first_match = ObFileSqlValueType::is_double_text(first.ptr_, first.len_);
++                break;
++              case FS_TYPE_DATE:
++                first_match = ObFileSqlValueType::is_date_text(first.ptr_, first.len_);
++                break;
++              default:
++                first_match = ObFileSqlValueType::is_datetime_text(first.ptr_, first.len_);
++                break;
++            }
++            header_like = !first_match;
++          }
++        }
++      }
++      has_header = header_like;
++    }
++    const int64_t first_data_row = has_header ? 1 : 0;
++    const int64_t data_row_cnt = row_cnt - first_data_row;
++    if (data_row_cnt > OB_FILE_SQL_MAX_ROW_CNT) {
++      ret = OB_SIZE_OVERFLOW;
++      LOG_WARN("too many rows", K(ret), K(data_row_cnt), K(OB_FILE_SQL_MAX_ROW_CNT));
++    } else if (has_header) {
++      for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
++        CsvField &field = fields.at(row_offsets.at(0) + c);
++        trim_right(field.ptr_, field.len_);
++        if (OB_FAIL(alloc_string(allocator_, field.ptr_, field.len_, def.columns_[c].name_))) {
++          LOG_WARN("copy column name failed", K(ret));
++        }
++      }
++    } else {
++      for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
++        char name[32];
++        const int64_t name_len = snprintf(name, sizeof(name), "column%ld", c);
++        if (OB_FAIL(alloc_string(allocator_, name, name_len, def.columns_[c].name_))) {
++          LOG_WARN("copy column name failed", K(ret));
++        }
++      }
++    }
++    if (OB_FAIL(ret)) {
++    } else if (OB_FAIL(dedup_column_names(def))) {
++      LOG_WARN("dedup column names failed", K(ret));
++    } else {
++      for (int64_t r = 0; OB_SUCC(ret) && r < data_row_cnt; ++r) {
++        for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
++          const CsvField &field = fields.at(row_offsets.at(r + first_data_row) + c);
++          ObFileSqlCell cell;
++          if (OB_FAIL(add_cell(allocator_, field.ptr_, field.len_, options, cell))) {
++            LOG_WARN("add cell failed", K(ret), K(r), K(c));
++          } else if (OB_FAIL(cells.push_back(cell))) {
++            LOG_WARN("push back cell failed", K(ret));
++          }
++        }
++      }
++      if (OB_SUCC(ret)) {
++        def.row_cnt_ = data_row_cnt;
++      }
++    }
++  }
++  return ret;
++}
++
++int ObFileSqlReader::dedup_column_names(ObFileTableDef &def)
++{
++  int ret = OB_SUCCESS;
++  std::vector<std::string> names;
++  names.reserve(def.column_cnt_);
++  for (int64_t i = 0; OB_SUCC(ret) && i < def.column_cnt_; ++i) {
++    std::string base(def.columns_[i].name_.ptr(), def.columns_[i].name_.length());
++    if (base.empty()) {
++      char buf[32];
++      snprintf(buf, sizeof(buf), "column%ld", i);
++      base = buf;
++    }
++    std::string candidate = base;
++    int64_t suffix = 1;
++    while (std::find(names.begin(), names.end(), candidate) != names.end()) {
++      char buf[32];
++      ++suffix;
++      snprintf(buf, sizeof(buf), "__%ld", suffix);
++      candidate = base + buf;
++    }
++    names.push_back(candidate);
++    if (candidate != base) {
++      if (OB_FAIL(alloc_string(allocator_, candidate.data(), candidate.size(),
++                               def.columns_[i].name_))) {
++        LOG_WARN("copy column name failed", K(ret));
++      }
++    }
++  }
++  return ret;
++}
++
++int ObFileSqlReader::parse_jsonl(char *buf,
++                                 const int64_t size,
++                                 ObFileTableDef &def,
++                                 ObIArray<ObFileSqlCell> &cells)
++{
++  int ret = OB_SUCCESS;
++  std::vector<std::string> column_names;
++  std::vector<std::vector<ObFileSqlCell> > rows;
++  int64_t pos = 0;
++  if (size >= 3 && static_cast<unsigned char>(buf[0]) == 0xEF
++      && static_cast<unsigned char>(buf[1]) == 0xBB
++      && static_cast<unsigned char>(buf[2]) == 0xBF) {
++    pos = 3;
++  }
++  int64_t row_no = 0;
++  while (pos < size && OB_SUCC(ret)) {
++    int64_t line_end = pos;
++    while (line_end < size && '\n' != buf[line_end]) {
++      ++line_end;
++    }
++    int64_t line_len = line_end - pos;
++    if (line_len > 0 && '\r' == buf[pos + line_len - 1]) {
++      --line_len;
++    }
++    int64_t begin = pos;
++    while (begin < pos + line_len && (' ' == buf[begin] || '\t' == buf[begin])) {
++      ++begin;
++    }
++    int64_t end = pos + line_len;
++    while (end > begin && (' ' == buf[end - 1] || '\t' == buf[end - 1])) {
++      --end;
++    }
++    pos = line_end + 1;
++    if (begin == end) {
++      continue;
++    }
++    std::vector<std::pair<std::string, std::string> > members;
++    std::vector<bool> member_is_null;
++    int64_t i = begin;
++    if ('{' != buf[i]) {
++      ret = OB_INVALID_ARGUMENT;
++      LOG_WARN("the line of the jsonl file is not an object", K(ret), K(row_no), K(def.path_));
++      break;
++    }
++    ++i;
++    bool obj_done = false;
++    while (!obj_done && OB_SUCC(ret)) {
++      while (i < end && (' ' == buf[i] || '\t' == buf[i])) {
++        ++i;
++      }
++      if (i < end && '}' == buf[i]) {
++        ++i;
++        obj_done = true;
++        break;
++      }
++      if (i >= end || '"' != buf[i]) {
++        ret = OB_INVALID_ARGUMENT;
++        LOG_WARN("expect a key of the json object", K(ret), K(row_no), K(def.path_));
++        break;
++      }
++      std::string key;
++      ++i;
++      bool key_done = false;
++      while (i < end && !key_done) {
++        if ('"' == buf[i]) {
++          key_done = true;
++          ++i;
++        } else if ('\\' == buf[i] && i + 1 < end) {
++          key.push_back(buf[i]);
++          key.push_back(buf[i + 1]);
++          i += 2;
++        } else {
++          key.push_back(buf[i]);
++          ++i;
++        }
++      }
++      if (!key_done) {
++        ret = OB_INVALID_ARGUMENT;
++        LOG_WARN("unterminated key", K(ret), K(row_no));
++      }
++      while (OB_SUCC(ret) && i < end && (' ' == buf[i] || '\t' == buf[i])) {
++        ++i;
++      }
++      if (OB_FAIL(ret)) {
++        break;
++      } else if (i >= end || ':' != buf[i]) {
++        ret = OB_INVALID_ARGUMENT;
++        LOG_WARN("expect ':' after the key", K(ret), K(row_no));
++        break;
++      }
++      ++i;
++      while (i < end && (' ' == buf[i] || '\t' == buf[i])) {
++        ++i;
++      }
++      std::string value;
++      bool value_is_null = false;
++      if (i >= end) {
++        ret = OB_INVALID_ARGUMENT;
++        LOG_WARN("missing value", K(ret), K(row_no));
++      } else if ('"' == buf[i]) {
++        ++i;
++        bool value_done = false;
++        while (i < end && !value_done && OB_SUCC(ret)) {
++          if ('"' == buf[i]) {
++            value_done = true;
++            ++i;
++          } else if ('\\' == buf[i] && i + 1 < end) {
++            char out[4];
++            int64_t out_len = 0;
++            if (OB_FAIL(json_unescape(buf[i + 1], out, out_len))) {
++              LOG_WARN("unescape json string failed", K(ret), K(row_no));
++            } else {
++              value.append(out, out_len);
++              i += 2;
++            }
++          } else {
++            value.push_back(buf[i]);
++            ++i;
++          }
++        }
++        if (!value_done && OB_SUCC(ret)) {
++          ret = OB_INVALID_ARGUMENT;
++          LOG_WARN("unterminated string value", K(ret), K(row_no));
++        }
++      } else if ('{' == buf[i] || '[' == buf[i]) {
++        ret = OB_NOT_SUPPORTED;
++        LOG_WARN("nested json value is not supported", K(ret), K(row_no), K(def.path_));
++      } else {
++        const int64_t value_begin = i;
++        while (i < end && ',' != buf[i] && '}' != buf[i] && ' ' != buf[i]) {
++          ++i;
++        }
++        if (i == value_begin) {
++          ret = OB_INVALID_ARGUMENT;
++          LOG_WARN("empty value", K(ret), K(row_no));
++        } else {
++          value.assign(buf + value_begin, i - value_begin);
++          if ("null" == value) {
++            value_is_null = true;
++            value.clear();
++          }
++        }
++      }
++      if (OB_SUCC(ret)) {
++        members.push_back(std::make_pair(key, value));
++        member_is_null.push_back(value_is_null);
++      }
++      while (OB_SUCC(ret) && i < end && (' ' == buf[i] || '\t' == buf[i])) {
++        ++i;
++      }
++      if (OB_FAIL(ret)) {
++        break;
++      } else if (i < end && ',' == buf[i]) {
++        ++i;
++      } else if (i < end && '}' == buf[i]) {
++        ++i;
++        obj_done = true;
++      } else {
++        ret = OB_INVALID_ARGUMENT;
++        LOG_WARN("expect ',' or '}' in the json object", K(ret), K(row_no));
++      }
++    }
++    while (OB_SUCC(ret) && i < end && (' ' == buf[i] || '\t' == buf[i])) {
++      ++i;
++    }
++    if (OB_SUCC(ret) && i != end) {
++      ret = OB_INVALID_ARGUMENT;
++      LOG_WARN("unexpected trailing characters", K(ret), K(row_no), K(def.path_));
++    }
++    if (OB_SUCC(ret)) {
++      for (int64_t m = 0; m < static_cast<int64_t>(members.size()); ++m) {
++        if (std::find(column_names.begin(), column_names.end(), members.at(m).first)
++            == column_names.end()) {
++          column_names.push_back(members.at(m).first);
++        }
++      }
++      std::vector<ObFileSqlCell> row;
++      for (int64_t m = 0; OB_SUCC(ret) && m < static_cast<int64_t>(members.size()); ++m) {
++        const int64_t idx = std::find(column_names.begin(), column_names.end(),
++                                      members.at(m).first) - column_names.begin();
++        if (idx >= static_cast<int64_t>(row.size())) {
++          const int64_t old_size = static_cast<int64_t>(row.size());
++          row.resize(idx + 1);
++          for (int64_t c = old_size; c <= idx; ++c) {
++            row.at(c).is_null_ = true;
++          }
++        }
++        ObFileSqlCell &cell = row.at(idx);
++        if (member_is_null.at(m)) {
++          cell.is_null_ = true;
++          cell.text_.reset();
++        } else {
++          cell.is_null_ = false;
++          if (OB_FAIL(alloc_string(allocator_, members.at(m).second.data(),
++                                   members.at(m).second.size(), cell.text_))) {
++            LOG_WARN("copy json value failed", K(ret));
++          }
++        }
++      }
++      if (OB_SUCC(ret)) {
++        rows.push_back(row);
++        ++row_no;
++      }
++    }
++  }
++  if (OB_SUCC(ret)) {
++    if (row_no > OB_FILE_SQL_MAX_ROW_CNT) {
++      ret = OB_SIZE_OVERFLOW;
++    } else if (row_no <= 0 || column_names.empty()) {
++      ret = OB_ITER_END;
++      LOG_WARN("the jsonl file has no row", K(ret), K(def.path_));
++    } else if (static_cast<int64_t>(column_names.size()) > OB_FILE_MAX_COLUMN_CNT) {
++      ret = OB_INVALID_ARGUMENT;
++    } else {
++      def.column_cnt_ = static_cast<int64_t>(column_names.size());
++      def.row_cnt_ = row_no;
++      for (int64_t c = 0; OB_SUCC(ret) && c < def.column_cnt_; ++c) {
++        if (OB_FAIL(alloc_string(allocator_, column_names.at(c).data(),
++                                 column_names.at(c).size(), def.columns_[c].name_))) {
++          LOG_WARN("copy column name failed", K(ret));
++        }
++      }
++      if (OB_FAIL(ret)) {
++      } else if (OB_FAIL(dedup_column_names(def))) {
++        LOG_WARN("dedup column names failed", K(ret));
++      } else {
++        for (int64_t r = 0; OB_SUCC(ret) && r < row_no; ++r) {
++          // The union of the fields is only known now, pad the short rows.
++          const int64_t old_size = static_cast<int64_t>(rows.at(r).size());
++          rows.at(r).resize(def.column_cnt_);
++          for (int64_t c = old_size; c < def.column_cnt_; ++c) {
++            rows.at(r).at(c).is_null_ = true;
++          }
++          for (int64_t c = 0; OB_SUCC(ret) && c < def.column_cnt_; ++c) {
++            if (OB_FAIL(cells.push_back(rows.at(r).at(c)))) {
++              LOG_WARN("push back cell failed", K(ret));
++            }
++          }
++        }
++      }
++    }
++  }
++  return ret;
++}
++
++int ObFileSqlReader::infer_column_types(ObFileTableDef &def,
++                                        ObIArray<ObFileSqlCell> &cells)
++{
++  int ret = OB_SUCCESS;
++  const int64_t column_cnt = def.column_cnt_;
++  const int64_t row_cnt = def.row_cnt_;
++  for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
++    ObFileSqlType type = FS_TYPE_NULL;
++    const ObFileSqlType candidates[] = {
++        FS_TYPE_BOOLEAN, FS_TYPE_BIGINT, FS_TYPE_DOUBLE, FS_TYPE_DATE, FS_TYPE_DATETIME,
++        FS_TYPE_VARCHAR
++    };
++    bool nullable = false;
++    bool has_value = false;
++    for (int64_t k = 0;
++         k < static_cast<int64_t>(sizeof(candidates) / sizeof(candidates[0]))
++         && FS_TYPE_NULL == type;
++         ++k) {
++      bool all_match = true;
++      for (int64_t r = 0; all_match && r < row_cnt; ++r) {
++        const ObFileSqlCell &cell = cells.at(r * column_cnt + c);
++        if (cell.is_null_) {
++          nullable = true;
++          continue;
++        }
++        has_value = true;
++        const char *ptr = cell.text_.ptr();
++        const int64_t len = cell.text_.length();
++        switch (candidates[k]) {
++          case FS_TYPE_BOOLEAN:
++            all_match = ObFileSqlValueType::is_bool_text(ptr, len);
++            break;
++          case FS_TYPE_BIGINT:
++            all_match = ObFileSqlValueType::is_int_text(ptr, len);
++            break;
++          case FS_TYPE_DOUBLE:
++            all_match = ObFileSqlValueType::is_double_text(ptr, len);
++            break;
++          case FS_TYPE_DATE:
++            all_match = ObFileSqlValueType::is_date_text(ptr, len);
++            break;
++          case FS_TYPE_DATETIME:
++            all_match = ObFileSqlValueType::is_datetime_text(ptr, len);
++            break;
++          default:
++            all_match = true;
++            break;
++        }
++      }
++      if (all_match && has_value) {
++        type = candidates[k];
++      }
++    }
++    if (!has_value) {
++      type = FS_TYPE_NULL;
++    }
++    def.columns_[c].type_ = type;
++    def.columns_[c].nullable_ = nullable;
++    if (FS_TYPE_DATETIME == type) {
++      for (int64_t r = 0; r < row_cnt; ++r) {
++        ObFileSqlCell &cell = cells.at(r * column_cnt + c);
++        if (!cell.is_null_) {
++          ObFileSqlValueType::normalize_datetime_text(cell.text_.ptr(), cell.text_.length());
++        }
++      }
++    }
++  }
++  return ret;
++}
++
++int ObFileSqlReader::infer_json_column_types(ObFileTableDef &def,
++                                             ObIArray<ObFileSqlCell> &cells)
++{
++  int ret = OB_SUCCESS;
++  const int64_t column_cnt = def.column_cnt_;
++  const int64_t row_cnt = def.row_cnt_;
++  for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
++    bool seen_value = false;
++    bool all_bool = true;
++    bool all_int = true;
++    bool all_double = true;
++    bool nullable = false;
++    for (int64_t r = 0; r < row_cnt; ++r) {
++      const ObFileSqlCell &cell = cells.at(r * column_cnt + c);
++      if (cell.is_null_) {
++        nullable = true;
++        continue;
++      }
++      seen_value = true;
++      const char *ptr = cell.text_.ptr();
++      const int64_t len = cell.text_.length();
++      const bool is_bool = (4 == len && 0 == strncasecmp(ptr, "true", 4))
++                           || (5 == len && 0 == strncasecmp(ptr, "false", 5));
++      if (!is_bool) {
++        all_bool = false;
++      }
++      if (!ObFileSqlValueType::is_int_text(ptr, len)) {
++        all_int = false;
++      }
++      if (!ObFileSqlValueType::is_double_text(ptr, len)) {
++        all_double = false;
++      }
++    }
++    ObFileSqlType type = FS_TYPE_NULL;
++    if (seen_value) {
++      if (all_bool) {
++        type = FS_TYPE_BOOLEAN;
++      } else if (all_int) {
++        type = FS_TYPE_BIGINT;
++      } else if (all_double) {
++        type = FS_TYPE_DOUBLE;
++      } else {
++        type = FS_TYPE_VARCHAR;
++      }
++    }
++    def.columns_[c].type_ = type;
++    def.columns_[c].nullable_ = nullable;
++  }
++  return ret;
++}
++
++int ObFileSqlReader::read_file(const ObString &path,
++                               const ObFileSqlFormat format,
++                               const ObFileSqlOptions &options,
++                               ObFileTableDef &def,
++                               ObIArray<ObFileSqlCell> &cells)
++{
++  int ret = OB_SUCCESS;
++  char *buf = NULL;
++  int64_t size = 0;
++  def.format_ = format;
++  def.path_ = path;
++  def.column_cnt_ = 0;
++  def.row_cnt_ = 0;
++  if (OB_FAIL(load_file_content(path, buf, size))) {
++    LOG_WARN("load file content failed", K(ret), K(path));
++  } else if (FS_FMT_CSV == format || FS_FMT_INVALID == format) {
++    if (OB_FAIL(parse_csv(buf, size, options, def, cells))) {
++      LOG_WARN("parse csv file failed", K(ret), K(path));
++    } else if (OB_FAIL(infer_column_types(def, cells))) {
++      LOG_WARN("infer column types failed", K(ret));
++    }
++  } else if (FS_FMT_JSONL == format) {
++    if (OB_FAIL(parse_jsonl(buf, size, def, cells))) {
++      LOG_WARN("parse jsonl file failed", K(ret), K(path));
++    } else if (OB_FAIL(infer_json_column_types(def, cells))) {
++      LOG_WARN("infer column types failed", K(ret));
++    }
++  } else if (FS_FMT_PARQUET == format) {
++    if (OB_FAIL(parse_parquet(buf, size, def, cells))) {
++      LOG_WARN("parse parquet file failed", K(ret), K(path));
++    }
++  } else {
++    ret = OB_INVALID_ARGUMENT;
++    LOG_WARN("invalid file format", K(ret), K(path), K(format));
++  }
++  return ret;
++}
++
++int ObFileSqlReader::glob_files(const ObString &pattern,
++                                ObIArray<ObString> &files)
++{
++  int ret = OB_SUCCESS;
++  char *pattern_str = NULL;
++  const int64_t len = pattern.length();
++  if (OB_UNLIKELY(len <= 0)) {
++    ret = OB_INVALID_ARGUMENT;
++    LOG_WARN("invalid glob pattern", K(ret), K(pattern));
++  } else if (OB_ISNULL(pattern_str = static_cast<char *>(allocator_.alloc(len + 1)))) {
++    ret = OB_ALLOCATE_MEMORY_FAILED;
++  } else {
++    memcpy(pattern_str, pattern.ptr(), len);
++    pattern_str[len] = '\0';
++    glob_t glob_result;
++    memset(&glob_result, 0, sizeof(glob_result));
++    const int gret = ::glob(pattern_str, GLOB_NOSORT, NULL, &glob_result);
++    if (GLOB_NOMATCH == gret) {
++      ret = OB_ITER_END;
++      LOG_WARN("no file matches the pattern", K(ret), K(pattern));
++    } else if (0 != gret) {
++      ret = OB_INVALID_ARGUMENT;
++      LOG_WARN("glob failed", K(ret), K(pattern), K(gret));
++    } else {
++      std::vector<std::string> paths;
++      paths.reserve(glob_result.gl_pathc);
++      for (size_t i = 0; i < glob_result.gl_pathc; ++i) {
++        struct stat file_stat;
++        if (0 == ::stat(glob_result.gl_pathv[i], &file_stat) && S_ISREG(file_stat.st_mode)) {
++          paths.push_back(std::string(glob_result.gl_pathv[i]));
++        }
++      }
++      std::sort(paths.begin(), paths.end());
++      for (size_t i = 0; OB_SUCC(ret) && i < paths.size(); ++i) {
++        ObString name;
++        if (OB_FAIL(alloc_string(allocator_, paths.at(i).data(), static_cast<int64_t>(paths.at(i).size()), name))) {
++          LOG_WARN("copy path failed", K(ret));
++        } else if (OB_FAIL(files.push_back(name))) {
++          LOG_WARN("push back path failed", K(ret));
++        }
++      }
++      if (OB_SUCC(ret) && paths.empty()) {
++        ret = OB_ITER_END;
++      }
++    }
++    ::globfree(&glob_result);
++  }
++  return ret;
++}
++
++// ---------------------------------------------------------------------------
++// Parquet
++// ---------------------------------------------------------------------------
++
++namespace
++{
++
++// Thrift compact protocol, only the parts of the parquet metadata that are
++// needed here.
++class PqReader
++{
++public:
++  PqReader(const char *data, const int64_t size)
++    : data_(data), size_(size), pos_(0), last_id_(0) {}
++  int64_t pos() const { return pos_; }
++  void set_pos(const int64_t pos) { pos_ = pos; }
++  bool read_byte(uint8_t &v)
++  {
++    bool bret = pos_ < size_;
++    if (bret) {
++      v = static_cast<uint8_t>(data_[pos_]);
++      ++pos_;
++    }
++    return bret;
++  }
++  bool read_varint(uint64_t &v)
++  {
++    bool bret = true;
++    int shift = 0;
++    v = 0;
++    while (bret) {
++      uint8_t b = 0;
++      if (!read_byte(b)) {
++        bret = false;
++      } else {
++        v |= (static_cast<uint64_t>(b & 0x7f) << shift);
++        shift += 7;
++        if (0 == (b & 0x80)) {
++          break;
++        } else if (shift > 63) {
++          bret = false;
++        }
++      }
++    }
++    return bret;
++  }
++  bool read_i64(int64_t &v)
++  {
++    uint64_t u = 0;
++    bool bret = read_varint(u);
++    if (bret) {
++      v = static_cast<int64_t>((u >> 1) ^ static_cast<uint64_t>(-static_cast<int64_t>(u & 1)));
++    }
++    return bret;
++  }
++  bool read_i32(int32_t &v)
++  {
++    int64_t v64 = 0;
++    bool bret = read_i64(v64);
++    if (bret) {
++      v = static_cast<int32_t>(v64);
++    }
++    return bret;
++  }
++  bool read_binary(const char *&ptr, int64_t &len)
++  {
++    uint64_t l = 0;
++    bool bret = read_varint(l);
++    if (bret) {
++      if (pos_ + static_cast<int64_t>(l) > size_) {
++        bret = false;
++      } else {
++        ptr = data_ + pos_;
++        len = static_cast<int64_t>(l);
++        pos_ += len;
++      }
++    }
++    return bret;
++  }
++  bool read_string(std::string &s)
++  {
++    const char *p = NULL;
++    int64_t l = 0;
++    bool bret = read_binary(p, l);
++    if (bret) {
++      s.assign(p, l);
++    }
++    return bret;
++  }
++  bool read_list(uint8_t &elem_type, int64_t &count)
++  {
++    uint8_t b = 0;
++    bool bret = read_byte(b);
++    if (bret) {
++      elem_type = b & 0x0f;
++      const uint32_t sz = (b & 0xf0) >> 4;
++      if (15 == sz) {
++        uint64_t v = 0;
++        bret = read_varint(v);
++        count = static_cast<int64_t>(v);
++      } else {
++        count = static_cast<int64_t>(sz);
++      }
++    }
++    return bret;
++  }
++  bool read_map_header(uint8_t &key_type, uint8_t &value_type, int64_t &count)
++  {
++    uint8_t b = 0;
++    bool bret = read_byte(b);
++    if (bret) {
++      key_type = b & 0x0f;
++      count = static_cast<int64_t>((b & 0xf0) >> 4);
++      if (0 == count) {
++        value_type = 0;
++      } else {
++        bret = read_byte(value_type);
++      }
++    }
++    return bret;
++  }
++  bool next_field(uint8_t &type, int16_t &id)
++  {
++    uint8_t b = 0;
++    bool bret = read_byte(b);
++    if (bret) {
++      if (0 == b) {
++        type = 0;
++      } else {
++        type = b & 0x0f;
++        const uint32_t delta = (b & 0xf0) >> 4;
++        if (0 != delta) {
++          id = static_cast<int16_t>(last_id_ + static_cast<int16_t>(delta));
++        } else {
++          int32_t z = 0;
++          if (!read_i32(z)) {
++            bret = false;
++          }
++          id = static_cast<int16_t>(z);
++        }
++        last_id_ = id;
++      }
++    }
++    return bret;
++  }
++  bool skip(const uint8_t type)
++  {
++    bool bret = true;
++    switch (type) {
++      case 1:
++      case 2:
++        break;
++      case 3: {
++        uint8_t b = 0;
++        bret = read_byte(b);
++        break;
++      }
++      case 4:
++      case 5:
++      case 6: {
++        uint64_t u = 0;
++        bret = read_varint(u);
++        break;
++      }
++      case 7: {
++        if (pos_ + 8 > size_) {
++          bret = false;
++        } else {
++          pos_ += 8;
++        }
++        break;
++      }
++      case 8: {
++        const char *p = NULL;
++        int64_t l = 0;
++        bret = read_binary(p, l);
++        break;
++      }
++      case 9:
++      case 10: {
++        uint8_t elem_type = 0;
++        int64_t count = 0;
++        bret = read_list(elem_type, count);
++        for (int64_t i = 0; bret && i < count; ++i) {
++          bret = skip(elem_type);
++        }
++        break;
++      }
++      case 11: {
++        uint8_t key_type = 0;
++        uint8_t value_type = 0;
++        int64_t count = 0;
++        bret = read_map_header(key_type, value_type, count);
++        for (int64_t i = 0; bret && i < count; ++i) {
++          bret = skip(key_type) && skip(value_type);
++        }
++        break;
++      }
++      case 12: {
++        begin_struct();
++        while (bret) {
++          uint8_t t = 0;
++          int16_t id = 0;
++          if (!next_field(t, id)) {
++            bret = false;
++          } else if (0 == t) {
++            break;
++          } else if (!skip(t)) {
++            bret = false;
++          }
++        }
++        end_struct();
++        break;
++      }
++      default:
++        bret = false;
++        break;
++    }
++    return bret;
++  }
++  void begin_struct()
++  {
++    stack_.push_back(last_id_);
++    last_id_ = 0;
++  }
++  void end_struct()
++  {
++    if (!stack_.empty()) {
++      last_id_ = stack_.back();
++      stack_.pop_back();
++    }
++  }
++
++private:
++  const char *data_;
++  int64_t size_;
++  int64_t pos_;
++  int16_t last_id_;
++  std::vector<int16_t> stack_;
++};
++
++struct PqSchemaElem
++{
++  PqSchemaElem() : type_(-1), repetition_(-1), num_children_(0), converted_type_(-1) {}
++  int32_t type_;
++  int32_t repetition_;
++  int32_t num_children_;
++  int32_t converted_type_;
++  std::string name_;
++};
++
++struct PqColMeta
++{
++  PqColMeta()
++    : type_(-1), codec_(0), num_values_(0), total_compressed_size_(0),
++      data_page_offset_(-1), dictionary_page_offset_(-1) {}
++  int32_t type_;
++  int32_t codec_;
++  int64_t num_values_;
++  int64_t total_compressed_size_;
++  int64_t data_page_offset_;
++  int64_t dictionary_page_offset_;
++};
++
++struct PqRowGroupMeta
++{
++  PqRowGroupMeta() : num_rows_(0) {}
++  int64_t num_rows_;
++  std::vector<PqColMeta> columns_;
++};
++
++struct PqFileMeta
++{
++  PqFileMeta() : num_rows_(0) {}
++  int64_t num_rows_;
++  std::vector<PqSchemaElem> schema_;
++  std::vector<PqRowGroupMeta> row_groups_;
++};
++
++struct PqPageHeader
++{
++  PqPageHeader()
++    : type_(-1), uncompressed_size_(0), compressed_size_(0), num_values_(0),
++      encoding_(0), def_levels_byte_length_(0), is_v2_(false),
++      is_compressed_v2_(true), num_dict_values_(0) {}
++  int32_t type_;
++  int32_t uncompressed_size_;
++  int32_t compressed_size_;
++  int32_t num_values_;
++  int32_t encoding_;
++  int32_t def_levels_byte_length_;
++  bool is_v2_;
++  bool is_compressed_v2_;
++  int32_t num_dict_values_;
++};
++
++bool pq_parse_schema_element(PqReader &r, PqSchemaElem &elem)
++{
++  bool bret = true;
++  r.begin_struct();
++  while (bret) {
++    uint8_t t = 0;
++    int16_t id = 0;
++    if (!r.next_field(t, id)) {
++      bret = false;
++    } else if (0 == t) {
++      break;
++    } else if (1 == id) {
++      bret = r.read_i32(elem.type_);
++    } else if (3 == id) {
++      bret = r.read_i32(elem.repetition_);
++    } else if (4 == id && 8 == t) {
++      bret = r.read_string(elem.name_);
++    } else if (5 == id) {
++      bret = r.read_i32(elem.num_children_);
++    } else if (6 == id) {
++      bret = r.read_i32(elem.converted_type_);
++    } else {
++      bret = r.skip(t);
++    }
++  }
++  r.end_struct();
++  return bret;
++}
++
++bool pq_parse_col_meta(PqReader &r, PqColMeta &meta)
++{
++  bool bret = true;
++  r.begin_struct();
++  while (bret) {
++    uint8_t t = 0;
++    int16_t id = 0;
++    if (!r.next_field(t, id)) {
++      bret = false;
++    } else if (0 == t) {
++      break;
++    } else if (1 == id) {
++      bret = r.read_i32(meta.type_);
++    } else if (2 == id) {
++      uint8_t elem_type = 0;
++      int64_t count = 0;
++      bret = r.read_list(elem_type, count);
++      for (int64_t i = 0; bret && i < count; ++i) {
++        int32_t v = 0;
++        bret = r.read_i32(v);
++      }
++    } else if (3 == id) {
++      uint8_t elem_type = 0;
++      int64_t count = 0;
++      bret = r.read_list(elem_type, count);
++      for (int64_t i = 0; bret && i < count; ++i) {
++        std::string s;
++        bret = r.read_string(s);
++      }
++    } else if (4 == id) {
++      bret = r.read_i32(meta.codec_);
++    } else if (5 == id) {
++      bret = r.read_i64(meta.num_values_);
++    } else if (7 == id) {
++      bret = r.read_i64(meta.total_compressed_size_);
++    } else if (9 == id) {
++      bret = r.read_i64(meta.data_page_offset_);
++    } else if (11 == id) {
++      bret = r.read_i64(meta.dictionary_page_offset_);
++    } else {
++      bret = r.skip(t);
++    }
++  }
++  r.end_struct();
++  return bret;
++}
++
++bool pq_parse_column_chunk(PqReader &r, PqColMeta &meta)
++{
++  bool bret = true;
++  r.begin_struct();
++  while (bret) {
++    uint8_t t = 0;
++    int16_t id = 0;
++    if (!r.next_field(t, id)) {
++      bret = false;
++    } else if (0 == t) {
++      break;
++    } else if (3 == id) {
++      bret = pq_parse_col_meta(r, meta);
++    } else {
++      bret = r.skip(t);
++    }
++  }
++  r.end_struct();
++  return bret;
++}
++
++bool pq_parse_row_group(PqReader &r, PqRowGroupMeta &rg)
++{
++  bool bret = true;
++  r.begin_struct();
++  while (bret) {
++    uint8_t t = 0;
++    int16_t id = 0;
++    if (!r.next_field(t, id)) {
++      bret = false;
++    } else if (0 == t) {
++      break;
++    } else if (1 == id) {
++      uint8_t elem_type = 0;
++      int64_t count = 0;
++      bret = r.read_list(elem_type, count);
++      for (int64_t i = 0; bret && i < count; ++i) {
++        PqColMeta meta;
++        if (!pq_parse_column_chunk(r, meta)) {
++          bret = false;
++        } else {
++          rg.columns_.push_back(meta);
++        }
++      }
++    } else if (3 == id) {
++      bret = r.read_i64(rg.num_rows_);
++    } else {
++      bret = r.skip(t);
++    }
++  }
++  r.end_struct();
++  return bret;
++}
++
++bool pq_parse_file_meta(const char *data, const int64_t size, PqFileMeta &meta)
++{
++  bool bret = true;
++  PqReader r(data, size);
++  r.begin_struct();
++  while (bret) {
++    uint8_t t = 0;
++    int16_t id = 0;
++    if (!r.next_field(t, id)) {
++      bret = false;
++    } else if (0 == t) {
++      break;
++    } else if (2 == id) {
++      uint8_t elem_type = 0;
++      int64_t count = 0;
++      bret = r.read_list(elem_type, count);
++      for (int64_t i = 0; bret && i < count; ++i) {
++        PqSchemaElem elem;
++        if (!pq_parse_schema_element(r, elem)) {
++          bret = false;
++        } else {
++          meta.schema_.push_back(elem);
++        }
++      }
++    } else if (3 == id) {
++      bret = r.read_i64(meta.num_rows_);
++    } else if (4 == id) {
++      uint8_t elem_type = 0;
++      int64_t count = 0;
++      bret = r.read_list(elem_type, count);
++      for (int64_t i = 0; bret && i < count; ++i) {
++        PqRowGroupMeta rg;
++        if (!pq_parse_row_group(r, rg)) {
++          bret = false;
++        } else {
++          meta.row_groups_.push_back(rg);
++        }
++      }
++    } else {
++      bret = r.skip(t);
++    }
++  }
++  r.end_struct();
++  return bret;
++}
++
++bool pq_parse_page_header(PqReader &r, PqPageHeader &h)
++{
++  bool bret = true;
++  r.begin_struct();
++  while (bret) {
++    uint8_t t = 0;
++    int16_t id = 0;
++    if (!r.next_field(t, id)) {
++      bret = false;
++    } else if (0 == t) {
++      break;
++    } else if (1 == id) {
++      bret = r.read_i32(h.type_);
++    } else if (2 == id) {
++      bret = r.read_i32(h.uncompressed_size_);
++    } else if (3 == id) {
++      bret = r.read_i32(h.compressed_size_);
++    } else if (5 == id) {
++      h.is_v2_ = false;
++      r.begin_struct();
++      while (bret) {
++        uint8_t t2 = 0;
++        int16_t id2 = 0;
++        if (!r.next_field(t2, id2)) {
++          bret = false;
++        } else if (0 == t2) {
++          break;
++        } else if (1 == id2) {
++          bret = r.read_i32(h.num_values_);
++        } else if (2 == id2) {
++          bret = r.read_i32(h.encoding_);
++        } else {
++          bret = r.skip(t2);
++        }
++      }
++      r.end_struct();
++    } else if (7 == id) {
++      r.begin_struct();
++      while (bret) {
++        uint8_t t2 = 0;
++        int16_t id2 = 0;
++        if (!r.next_field(t2, id2)) {
++          bret = false;
++        } else if (0 == t2) {
++          break;
++        } else if (1 == id2) {
++          bret = r.read_i32(h.num_dict_values_);
++        } else if (2 == id2) {
++          bret = r.read_i32(h.encoding_);
++        } else {
++          bret = r.skip(t2);
++        }
++      }
++      r.end_struct();
++    } else if (8 == id) {
++      h.is_v2_ = true;
++      r.begin_struct();
++      while (bret) {
++        uint8_t t2 = 0;
++        int16_t id2 = 0;
++        if (!r.next_field(t2, id2)) {
++          bret = false;
++        } else if (0 == t2) {
++          break;
++        } else if (1 == id2) {
++          bret = r.read_i32(h.num_values_);
++        } else if (4 == id2) {
++          bret = r.read_i32(h.encoding_);
++        } else if (5 == id2) {
++          bret = r.read_i32(h.def_levels_byte_length_);
++        } else if (7 == id2) {
++          h.is_compressed_v2_ = (1 == t2);
++        } else {
++          bret = r.skip(t2);
++        }
++      }
++      r.end_struct();
++    } else {
++      bret = r.skip(t);
++    }
++  }
++  r.end_struct();
++  return bret;
++}
++
++bool pq_snappy_uncompress(const char *in,
++                          const int64_t in_len,
++                          char *out,
++                          const int64_t out_cap,
++                          int64_t &out_len)
++{
++  bool bret = true;
++  int64_t pos = 0;
++  uint64_t ulen = 0;
++  int shift = 0;
++  while (bret) {
++    if (pos >= in_len) {
++      bret = false;
++      break;
++    }
++    const uint8_t b = static_cast<uint8_t>(in[pos++]);
++    ulen |= (static_cast<uint64_t>(b & 0x7f) << shift);
++    shift += 7;
++    if (0 == (b & 0x80)) {
++      break;
++    } else if (shift > 35) {
++      bret = false;
++    }
++  }
++  if (bret && static_cast<int64_t>(ulen) > out_cap) {
++    bret = false;
++  }
++  if (bret) {
++    int64_t op = 0;
++    const int64_t target = static_cast<int64_t>(ulen);
++    while (bret && pos < in_len) {
++      const uint8_t tag = static_cast<uint8_t>(in[pos++]);
++      const int type = tag & 0x03;
++      if (0 == type) {
++        int64_t len = (tag >> 2) + 1;
++        if (len > 60) {
++          const int64_t extra = len - 60;
++          if (pos + extra > in_len) {
++            bret = false;
++            break;
++          }
++          len = 0;
++          for (int64_t i = 0; i < extra; ++i) {
++            len |= static_cast<int64_t>(static_cast<uint8_t>(in[pos + i])) << (8 * i);
++          }
++          pos += extra;
++          len += 1;
++        }
++        if (pos + len > in_len || op + len > target) {
++          bret = false;
++          break;
++        }
++        memcpy(out + op, in + pos, len);
++        pos += len;
++        op += len;
++      } else {
++        int64_t len = 0;
++        int64_t offset = 0;
++        if (1 == type) {
++          if (pos + 1 > in_len) {
++            bret = false;
++            break;
++          }
++          offset = (static_cast<int64_t>((tag >> 5) & 0x07) << 8)
++                   | static_cast<int64_t>(static_cast<uint8_t>(in[pos]));
++          len = ((tag >> 2) & 0x07) + 4;
++          ++pos;
++        } else if (2 == type) {
++          if (pos + 2 > in_len) {
++            bret = false;
++            break;
++          }
++          len = (tag >> 2) + 1;
++          offset = static_cast<int64_t>(static_cast<uint8_t>(in[pos]))
++                   | (static_cast<int64_t>(static_cast<uint8_t>(in[pos + 1])) << 8);
++          pos += 2;
++        } else {
++          if (pos + 4 > in_len) {
++            bret = false;
++            break;
++          }
++          len = (tag >> 2) + 1;
++          offset = static_cast<int64_t>(static_cast<uint8_t>(in[pos]))
++                   | (static_cast<int64_t>(static_cast<uint8_t>(in[pos + 1])) << 8)
++                   | (static_cast<int64_t>(static_cast<uint8_t>(in[pos + 2])) << 16)
++                   | (static_cast<int64_t>(static_cast<uint8_t>(in[pos + 3])) << 24);
++          pos += 4;
++        }
++        if (offset <= 0 || offset > op || op + len > target) {
++          bret = false;
++          break;
++        }
++        for (int64_t i = 0; i < len; ++i) {
++          out[op + i] = out[op - offset + i];
++        }
++        op += len;
++      }
++    }
++    if (bret) {
++      out_len = op;
++      bret = (op == target);
++    }
++  }
++  return bret;
++}
++
++bool pq_decompress(const int32_t codec,
++                   const char *in,
++                   const int64_t in_len,
++                   char *out,
++                   const int64_t out_cap,
++                   int64_t &out_len)
++{
++  bool bret = true;
++  if (0 == codec) {
++    if (in_len > out_cap) {
++      bret = false;
++    } else {
++      memcpy(out, in, in_len);
++      out_len = in_len;
++    }
++  } else if (1 == codec) {
++    bret = pq_snappy_uncompress(in, in_len, out, out_cap, out_len);
++  } else {
++    bret = false;
++  }
++  return bret;
++}
++
++int pq_bit_width(const int64_t max_value)
++{
++  int width = 0;
++  int64_t v = max_value;
++  while (v > 0) {
++    ++width;
++    v >>= 1;
++  }
++  return width;
++}
++
++bool pq_hybrid_decode(const char *p,
++                      const int64_t avail,
++                      const int64_t num_values,
++                      const int bit_width,
++                      std::vector<int64_t> &out,
++                      int64_t &bytes_used)
++{
++  bool bret = true;
++  int64_t pos = 0;
++  int64_t produced = 0;
++  out.assign(num_values, 0);
++  while (bret && produced < num_values) {
++    uint64_t header = 0;
++    int shift = 0;
++    while (bret) {
++      if (pos >= avail) {
++        bret = false;
++        break;
++      }
++      const uint8_t b = static_cast<uint8_t>(p[pos++]);
++      header |= (static_cast<uint64_t>(b & 0x7f) << shift);
++      shift += 7;
++      if (0 == (b & 0x80)) {
++        break;
++      } else if (shift > 63) {
++        bret = false;
++      }
++    }
++    if (!bret) {
++      break;
++    }
++    if (header & 1) {
++      const int64_t groups = static_cast<int64_t>(header >> 1);
++      const int64_t bytes = groups * bit_width;
++      if (pos + bytes > avail) {
++        bret = false;
++        break;
++      }
++      for (int64_t i = 0; i < groups * 8 && produced < num_values; ++i) {
++        int64_t v = 0;
++        for (int b = 0; b < bit_width; ++b) {
++          const int64_t bit_pos = i * bit_width + b;
++          const int64_t byte_idx = bit_pos / 8;
++          const int bit_idx = bit_pos % 8;
++          if (byte_idx < bytes) {
++            v |= ((static_cast<int64_t>(static_cast<uint8_t>(p[pos + byte_idx])) >> bit_idx)
++                  & 1LL)
++                 << b;
++          }
++        }
++        out[produced++] = v;
++      }
++      pos += bytes;
++    } else {
++      const int64_t run = static_cast<int64_t>(header >> 1);
++      const int64_t width_bytes = (bit_width + 7) / 8;
++      if (pos + width_bytes > avail) {
++        bret = false;
++        break;
++      }
++      int64_t v = 0;
++      for (int64_t b = 0; b < width_bytes; ++b) {
++        v |= static_cast<int64_t>(static_cast<uint8_t>(p[pos + b])) << (b * 8);
++      }
++      pos += width_bytes;
++      for (int64_t i = 0; i < run && produced < num_values; ++i) {
++        out[produced++] = v;
++      }
++    }
++  }
++  bytes_used = pos;
++  return bret;
++}
++
++void pq_format_double(const double v, std::string &out)
++{
++  char buf[64];
++  int n = 0;
++  for (int prec = 15; prec <= 17; ++prec) {
++    n = snprintf(buf, sizeof(buf), "%.*g", prec, v);
++    if (n > 0 && strtod(buf, NULL) == v) {
++      break;
++    }
++  }
++  out.assign(buf, n > 0 ? n : 0);
++}
++
++bool pq_decode_plain(const int32_t type,
++                     const char *p,
++                     const int64_t len,
++                     const int64_t count,
++                     std::vector<std::string> &out)
++{
++  bool bret = true;
++  if (count < 0) {
++    bret = false;
++  } else if (0 == type) {
++    const int64_t need = (count + 7) / 8;
++    if (need > len) {
++      bret = false;
++    } else {
++      for (int64_t i = 0; i < count; ++i) {
++        const bool v = ((static_cast<uint8_t>(p[i / 8]) >> (i % 8)) & 1) != 0;
++        out.push_back(v ? std::string("1") : std::string("0"));
++      }
++    }
++  } else if (1 == type) {
++    if (len < count * 4) {
++      bret = false;
++    } else {
++      for (int64_t i = 0; i < count; ++i) {
++        int32_t v = 0;
++        memcpy(&v, p + i * 4, 4);
++        char buf[16];
++        const int n = snprintf(buf, sizeof(buf), "%d", v);
++        out.push_back(std::string(buf, n > 0 ? n : 0));
++      }
++    }
++  } else if (2 == type) {
++    if (len < count * 8) {
++      bret = false;
++    } else {
++      for (int64_t i = 0; i < count; ++i) {
++        int64_t v = 0;
++        memcpy(&v, p + i * 8, 8);
++        char buf[24];
++        const int n = snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
++        out.push_back(std::string(buf, n > 0 ? n : 0));
++      }
++    }
++  } else if (4 == type) {
++    if (len < count * 4) {
++      bret = false;
++    } else {
++      for (int64_t i = 0; i < count; ++i) {
++        float v = 0.0f;
++        memcpy(&v, p + i * 4, 4);
++        std::string text;
++        pq_format_double(static_cast<double>(v), text);
++        out.push_back(text);
++      }
++    }
++  } else if (5 == type) {
++    if (len < count * 8) {
++      bret = false;
++    } else {
++      for (int64_t i = 0; i < count; ++i) {
++        double v = 0.0;
++        memcpy(&v, p + i * 8, 8);
++        std::string text;
++        pq_format_double(v, text);
++        out.push_back(text);
++      }
++    }
++  } else if (6 == type) {
++    int64_t off = 0;
++    for (int64_t i = 0; bret && i < count; ++i) {
++      if (off + 4 > len) {
++        bret = false;
++        break;
++      }
++      uint32_t l = 0;
++      memcpy(&l, p + off, 4);
++      off += 4;
++      if (off + static_cast<int64_t>(l) > len) {
++        bret = false;
++        break;
++      }
++      out.push_back(std::string(p + off, l));
++      off += static_cast<int64_t>(l);
++    }
++  } else {
++    bret = false;
++  }
++  return bret;
++}
++
++bool pq_decode_dict_indices(const char *p,
++                            const int64_t len,
++                            const int64_t count,
++                            const std::vector<std::string> &dict,
++                            std::vector<std::string> &out)
++{
++  bool bret = true;
++  if (len < 1) {
++    bret = false;
++  } else {
++    const int bit_width = static_cast<int>(static_cast<uint8_t>(p[0]));
++    std::vector<int64_t> idx;
++    int64_t used = 0;
++    if (!pq_hybrid_decode(p + 1, len - 1, count, bit_width, idx, used)) {
++      bret = false;
++    } else {
++      for (int64_t i = 0; bret && i < count; ++i) {
++        if (idx.at(i) < 0 || idx.at(i) >= static_cast<int64_t>(dict.size())) {
++          bret = false;
++        } else {
++          out.push_back(dict.at(idx.at(i)));
++        }
++      }
++    }
++  }
++  return bret;
++}
++
++bool pq_decode_values(const int32_t type,
++                      const int32_t encoding,
++                      const char *p,
++                      const int64_t len,
++                      const int64_t count,
++                      const std::vector<std::string> &dict,
++                      std::vector<std::string> &out)
++{
++  bool bret = false;
++  if (0 == encoding) {
++    bret = pq_decode_plain(type, p, len, count, out);
++  } else if (2 == encoding || 8 == encoding) {
++    bret = pq_decode_dict_indices(p, len, count, dict, out);
++  }
++  return bret;
++}
++
++bool pq_decode_column_pages(const char *file,
++                            const int64_t size,
++                            const PqColMeta &meta,
++                            const int64_t max_def,
++                            std::vector<std::string> &texts,
++                            std::vector<bool> &nulls)
++{
++  bool bret = true;
++  std::vector<std::string> dict;
++  int64_t pos = (meta.dictionary_page_offset_ > 0 ? meta.dictionary_page_offset_
++                                                 : meta.data_page_offset_);
++  if (pos <= 0 || pos >= size) {
++    bret = false;
++  }
++  int64_t value_cnt = 0;
++  int64_t page_cnt = 0;
++  while (bret && value_cnt < meta.num_values_) {
++    if (++page_cnt > 1000000) {
++      bret = false;
++      break;
++    }
++    PqReader r(file, size);
++    r.set_pos(pos);
++    PqPageHeader h;
++    if (!pq_parse_page_header(r, h)) {
++      bret = false;
++      break;
++    }
++    const int64_t header_len = r.pos() - pos;
++    pos += header_len;
++    if (h.compressed_size_ < 0 || pos + h.compressed_size_ > size) {
++      bret = false;
++      break;
++    }
++    const char *payload = file + pos;
++    if (2 == h.type_) {
++      std::vector<char> buf;
++      const char *data = payload;
++      int64_t data_len = h.compressed_size_;
++      if (h.uncompressed_size_ > 0 && h.uncompressed_size_ != h.compressed_size_) {
++        buf.resize(h.uncompressed_size_);
++        if (!pq_decompress(meta.codec_, payload, h.compressed_size_, buf.data(),
++                           h.uncompressed_size_, data_len)) {
++          bret = false;
++          break;
++        }
++        data = buf.data();
++      }
++      dict.clear();
++      if (!pq_decode_plain(meta.type_, data, data_len, h.num_dict_values_, dict)) {
++        bret = false;
++        break;
++      }
++      pos += h.compressed_size_;
++    } else if (0 == h.type_ || 3 == h.type_) {
++      std::vector<char> buf;
++      const char *data = payload;
++      int64_t data_len = h.compressed_size_;
++      int64_t def_byte_len = 0;
++      const char *def_data = NULL;
++      int64_t def_data_len = 0;
++      const char *value_data = NULL;
++      int64_t value_len = 0;
++      if (!h.is_v2_) {
++        if (h.uncompressed_size_ > 0 && h.uncompressed_size_ != h.compressed_size_) {
++          buf.resize(h.uncompressed_size_);
++          if (!pq_decompress(meta.codec_, payload, h.compressed_size_, buf.data(),
++                             h.uncompressed_size_, data_len)) {
++            bret = false;
++            break;
++          }
++          data = buf.data();
++        }
++        def_byte_len = (max_def > 0 ? 4 : 0);
++        if (data_len < def_byte_len) {
++          bret = false;
++          break;
++        }
++        if (max_def > 0) {
++          uint32_t level_len = 0;
++          memcpy(&level_len, data, 4);
++          def_data = data + 4;
++          def_data_len = static_cast<int64_t>(level_len);
++          if (4 + def_data_len > data_len) {
++            bret = false;
++            break;
++          }
++        }
++        value_data = data + def_byte_len + def_data_len;
++        value_len = data_len - def_byte_len - def_data_len;
++      } else {
++        def_byte_len = h.def_levels_byte_length_;
++        if (def_byte_len < 0 || def_byte_len > h.compressed_size_) {
++          bret = false;
++          break;
++        }
++        if (max_def > 0) {
++          def_data = payload;
++          def_data_len = def_byte_len;
++        }
++        const int64_t compressed_values_len = h.compressed_size_ - def_byte_len;
++        if (h.is_compressed_v2_) {
++          const int64_t uncompressed_values_len = h.uncompressed_size_ - def_byte_len;
++          if (uncompressed_values_len < 0) {
++            bret = false;
++            break;
++          }
++          buf.resize(uncompressed_values_len);
++          if (!pq_decompress(meta.codec_, payload + def_byte_len, compressed_values_len,
++                             buf.data(), uncompressed_values_len, value_len)) {
++            bret = false;
++            break;
++          }
++          value_data = buf.data();
++        } else {
++          value_data = payload + def_byte_len;
++          value_len = compressed_values_len;
++        }
++      }
++      std::vector<int64_t> defs;
++      int64_t used = 0;
++      if (max_def > 0) {
++        if (!pq_hybrid_decode(def_data, def_data_len, h.num_values_, pq_bit_width(max_def),
++                              defs, used)) {
++          bret = false;
++          break;
++        }
++      } else {
++        defs.assign(h.num_values_, 0);
++      }
++      int64_t value_in_page = 0;
++      for (int64_t i = 0; i < h.num_values_; ++i) {
++        if (max_def > 0 && defs.at(i) != max_def) {
++          ++value_in_page;
++        }
++      }
++      int64_t real_value_cnt = h.num_values_ - value_in_page;
++      std::vector<std::string> values;
++      if (real_value_cnt > 0) {
++        if (!pq_decode_values(meta.type_, h.encoding_, value_data, value_len,
++                              real_value_cnt, dict, values)) {
++          bret = false;
++          break;
++        }
++      }
++      int64_t vi = 0;
++      for (int64_t i = 0; i < h.num_values_; ++i) {
++        if (max_def > 0 && defs.at(i) != max_def) {
++          texts.push_back(std::string());
++          nulls.push_back(true);
++        } else {
++          if (vi >= static_cast<int64_t>(values.size())) {
++            bret = false;
++            break;
++          }
++          texts.push_back(values.at(vi));
++          nulls.push_back(false);
++          ++vi;
++        }
++      }
++      value_cnt += h.num_values_;
++      pos += h.compressed_size_;
++    } else {
++      pos += h.compressed_size_;
++    }
++  }
++  return bret && value_cnt == meta.num_values_;
++}
++
++ObFileSqlType pq_type_to_sql_type(const int32_t type)
++{
++  ObFileSqlType ret = FS_TYPE_VARCHAR;
++  switch (type) {
++    case 0:
++      ret = FS_TYPE_BOOLEAN;
++      break;
++    case 1:
++    case 2:
++      ret = FS_TYPE_BIGINT;
++      break;
++    case 4:
++    case 5:
++      ret = FS_TYPE_DOUBLE;
++      break;
++    default:
++      ret = FS_TYPE_VARCHAR;
++      break;
++  }
++  return ret;
++}
++
++}  // namespace
++
++int ObFileSqlReader::parse_parquet(const char *buf,
++                                   const int64_t size,
++                                   ObFileTableDef &def,
++                                   ObIArray<ObFileSqlCell> &cells)
++{
++  int ret = OB_SUCCESS;
++  if (OB_UNLIKELY(size < 12 || 0 != memcmp(buf, "PAR1", 4)
++                  || 0 != memcmp(buf + size - 4, "PAR1", 4))) {
++    ret = OB_INVALID_ARGUMENT;
++    LOG_WARN("the file is not a parquet file", K(ret), K(def.path_));
++  } else {
++    uint32_t meta_len = 0;
++    memcpy(&meta_len, buf + size - 8, 4);
++    const int64_t meta_start = size - 8 - static_cast<int64_t>(meta_len);
++    PqFileMeta meta;
++    if (meta_start < 4 || meta_start >= size) {
++      ret = OB_INVALID_ARGUMENT;
++      LOG_WARN("invalid parquet metadata", K(ret), K(def.path_), K(meta_len));
++    } else if (!pq_parse_file_meta(buf + meta_start, static_cast<int64_t>(meta_len), meta)) {
++      ret = OB_INVALID_ARGUMENT;
++      LOG_WARN("parse parquet metadata failed", K(ret), K(def.path_));
++    } else if (meta.schema_.empty() || meta.schema_.at(0).num_children_ <= 0) {
++      ret = OB_INVALID_ARGUMENT;
++      LOG_WARN("unsupported parquet schema", K(ret), K(def.path_));
++    } else {
++      // Only flat schemas are supported, like the jsonl reader.
++      const int64_t column_cnt = meta.schema_.at(0).num_children_;
++      if (column_cnt > OB_FILE_MAX_COLUMN_CNT
++          || (1 + column_cnt) > static_cast<int64_t>(meta.schema_.size())) {
++        ret = OB_INVALID_ARGUMENT;
++        LOG_WARN("invalid parquet schema", K(ret), K(column_cnt));
++      }
++      std::vector<int32_t> col_types;
++      std::vector<int64_t> col_max_def;
++      std::vector<std::string> col_names;
++      for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
++        const PqSchemaElem &elem = meta.schema_.at(1 + c);
++        if (elem.num_children_ > 0) {
++          ret = OB_NOT_SUPPORTED;
++          LOG_WARN("nested parquet columns are not supported", K(ret), K(c));
++        } else {
++          col_types.push_back(elem.type_);
++          col_max_def.push_back(1 == elem.repetition_ ? 1 : 0);
++          col_names.push_back(elem.name_);
++        }
++      }
++      if (OB_SUCC(ret)) {
++        def.column_cnt_ = column_cnt;
++        def.row_cnt_ = meta.num_rows_;
++        for (int64_t c = 0; c < column_cnt; ++c) {
++          if (OB_FAIL(alloc_string(allocator_, col_names.at(c).data(),
++                                   static_cast<int64_t>(col_names.at(c).size()),
++                                   def.columns_[c].name_))) {
++            LOG_WARN("copy column name failed", K(ret));
++          } else {
++            def.columns_[c].type_ = pq_type_to_sql_type(col_types.at(c));
++            def.columns_[c].nullable_ = col_max_def.at(c) > 0;
++          }
++        }
++      }
++      if (OB_FAIL(ret)) {
++      } else if (OB_FAIL(dedup_column_names(def))) {
++        LOG_WARN("dedup column names failed", K(ret));
++      } else {
++        std::vector<std::vector<std::string> > col_texts(column_cnt);
++        std::vector<std::vector<bool> > col_nulls(column_cnt);
++        int64_t total_rows = 0;
++        for (int64_t rg = 0; OB_SUCC(ret) && rg < static_cast<int64_t>(meta.row_groups_.size()); ++rg) {
++          const PqRowGroupMeta &row_group = meta.row_groups_.at(rg);
++          if (static_cast<int64_t>(row_group.columns_.size()) != column_cnt) {
++            ret = OB_INVALID_ARGUMENT;
++            LOG_WARN("the column count of the row group is unexpected", K(ret), K(rg));
++          }
++          for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
++            std::vector<std::string> texts;
++            std::vector<bool> nulls;
++            if (!pq_decode_column_pages(buf, size, row_group.columns_.at(c),
++                                        col_max_def.at(c), texts, nulls)) {
++              ret = OB_INVALID_ARGUMENT;
++              LOG_WARN("decode parquet column failed", K(ret), K(rg), K(c), K(def.path_));
++            } else if (static_cast<int64_t>(texts.size()) != row_group.num_rows_) {
++              ret = OB_INVALID_ARGUMENT;
++              LOG_WARN("unexpected value count", K(ret), K(rg), K(c),
++                       K(texts.size()), K(row_group.num_rows_));
++            } else {
++              col_texts.at(c).insert(col_texts.at(c).end(), texts.begin(), texts.end());
++              col_nulls.at(c).insert(col_nulls.at(c).end(), nulls.begin(), nulls.end());
++            }
++          }
++          if (OB_SUCC(ret)) {
++            total_rows += row_group.num_rows_;
++          }
++        }
++        if (OB_SUCC(ret)) {
++          if (total_rows > OB_FILE_SQL_MAX_ROW_CNT) {
++            ret = OB_SIZE_OVERFLOW;
++          } else if (meta.num_rows_ != total_rows) {
++            ret = OB_INVALID_ARGUMENT;
++            LOG_WARN("unexpected row count", K(ret), K(meta.num_rows_), K(total_rows));
++          } else {
++            def.row_cnt_ = total_rows;
++            for (int64_t r = 0; OB_SUCC(ret) && r < total_rows; ++r) {
++              for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
++                ObFileSqlCell cell;
++                if (col_nulls.at(c).at(r)) {
++                  cell.is_null_ = true;
++                } else if (OB_FAIL(alloc_string(allocator_, col_texts.at(c).at(r).data(),
++                                                static_cast<int64_t>(
++                                                    col_texts.at(c).at(r).size()),
++                                                cell.text_))) {
++                  LOG_WARN("copy value failed", K(ret));
++                }
++                if (OB_SUCC(ret) && OB_FAIL(cells.push_back(cell))) {
++                  LOG_WARN("push back cell failed", K(ret));
++                }
++              }
++            }
++          }
++        }
++      }
++    }
++  }
++  return ret;
++}
++
++}  // namespace sql
++}  // namespace oceanbase
+diff --git a/src/sql/resolver/dml/ob_file_sql_utils.h b/src/sql/resolver/dml/ob_file_sql_utils.h
+new file mode 100644
+index 000000000..1c1ef8bc5
+--- /dev/null
++++ b/src/sql/resolver/dml/ob_file_sql_utils.h
+@@ -0,0 +1,143 @@
++/**
++ * Copyright (c) 2025 OceanBase.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef OCEANBASE_SQL_RESOLVER_DML_OB_FILE_SQL_UTILS_H_
++#define OCEANBASE_SQL_RESOLVER_DML_OB_FILE_SQL_UTILS_H_
++
++#include "lib/string/ob_string.h"
++#include "lib/container/ob_iarray.h"
++#include "lib/allocator/ob_allocator.h"
++#include "sql/resolver/dml/ob_file_table_def.h"
++
++namespace oceanbase
++{
++namespace sql
++{
++
++// One cell of a file as it was read from the file. The text points into the
++// buffer that read_file() allocated from the statement allocator.
++struct ObFileSqlCell
++{
++  ObFileSqlCell() : text_(), is_null_(false) {}
++  common::ObString text_;
++  bool is_null_;
++};
++
++// Options that can be passed to the read_xxx() table functions.
++struct ObFileSqlOptions
++{
++  ObFileSqlOptions()
++    : format_(FS_FMT_INVALID),
++      has_header_(false),
++      header_(false),
++      has_delim_(false),
++      delim_(','),
++      has_quote_(false),
++      quote_('"'),
++      has_escape_(false),
++      escape_('"'),
++      has_nullstr_(false),
++      nullstr_(),
++      has_sample_size_(false),
++      sample_size_(-1) {}
++  // generic
++  ObFileSqlFormat format_;
++  // csv
++  bool has_header_;
++  bool header_;
++  bool has_delim_;
++  char delim_;
++  bool has_quote_;
++  char quote_;
++  bool has_escape_;
++  char escape_;
++  bool has_nullstr_;
++  common::ObString nullstr_;
++  // number of rows used for type inference, only -1 (whole file) is supported
++  bool has_sample_size_;
++  int64_t sample_size_;
++};
++
++// Reads CSV / JSONL / Parquet files and turns them into a schema plus a matrix
++// of cells. Every buffer used for the file content comes from the allocator
++// that is passed to read_file(), so the result stays valid as long as the
++// statement does.
++class ObFileSqlReader
++{
++public:
++  explicit ObFileSqlReader(common::ObIAllocator &alloc) : allocator_(alloc) {}
++  ~ObFileSqlReader() {}
++
++  // Read the whole file, infer the schema and fill in cell texts (row major:
++  // cells.at(row * column_cnt + col)). The row count is stored in def.row_cnt_.
++  int read_file(const common::ObString &path,
++                const ObFileSqlFormat format,
++                const ObFileSqlOptions &options,
++                ObFileTableDef &def,
++                common::ObIArray<ObFileSqlCell> &cells);
++
++  // POSIX glob(), the result is sorted by base name.
++  int glob_files(const common::ObString &pattern,
++                 common::ObIArray<common::ObString> &files);
++
++  static int detect_format_by_extension(const common::ObString &path,
++                                       ObFileSqlFormat &format);
++
++private:
++  // Reads the file into a buffer owned by the statement allocator.
++  int load_file_content(const common::ObString &path, char *&buf, int64_t &size);
++  // Splits rows/cells, fills column names and the raw cell matrix.
++  int parse_csv(char *buf, const int64_t size, const ObFileSqlOptions &options,
++                ObFileTableDef &def, common::ObIArray<ObFileSqlCell> &cells);
++  int parse_jsonl(char *buf, const int64_t size, ObFileTableDef &def,
++                  common::ObIArray<ObFileSqlCell> &cells);
++  int parse_parquet(const char *buf, const int64_t size, ObFileTableDef &def,
++                    common::ObIArray<ObFileSqlCell> &cells);
++  // Infer def.columns_[i].type_ / nullable_ from the cell matrix, and normalize
++  // DATE / DATETIME cell texts.
++  int infer_column_types(ObFileTableDef &def, common::ObIArray<ObFileSqlCell> &cells);
++  // JSON numbers keep their own type, so the candidates differ from CSV.
++  int infer_json_column_types(ObFileTableDef &def, common::ObIArray<ObFileSqlCell> &cells);
++  // Decodes the common JSON escapes into out (out must have 4 bytes).
++  static int json_unescape(const char esc, char *out, int64_t &out_len);
++
++  int alloc_copy_string(const common::ObString &src, common::ObString &dst);
++  int dedup_column_names(ObFileTableDef &def);
++
++private:
++  common::ObIAllocator &allocator_;
++  DISALLOW_COPY_AND_ASSIGN(ObFileSqlReader);
++};
++
++// Text based type inference helpers, shared by the CSV and JSONL readers.
++class ObFileSqlValueType
++{
++public:
++  static bool is_bool_text(const char *ptr, const int64_t len);
++  static bool is_int_text(const char *ptr, const int64_t len);
++  static bool is_double_text(const char *ptr, const int64_t len);
++  static bool is_date_text(const char *ptr, const int64_t len);
++  static bool is_datetime_text(const char *ptr, const int64_t len);
++  // 'T' separated timestamps are rewritten to ' ' in place.
++  static void normalize_datetime_text(char *ptr, const int64_t len);
++  static int64_t parse_int_text(const char *ptr, const int64_t len);
++  static double parse_double_text(const char *ptr, const int64_t len);
++};
++
++}  // namespace sql
++}  // namespace oceanbase
++
++#endif  // OCEANBASE_SQL_RESOLVER_DML_OB_FILE_SQL_UTILS_H_
+diff --git a/src/sql/resolver/dml/ob_file_table_def.h b/src/sql/resolver/dml/ob_file_table_def.h
+new file mode 100644
+index 000000000..19aa73e8c
+--- /dev/null
++++ b/src/sql/resolver/dml/ob_file_table_def.h
+@@ -0,0 +1,112 @@
++/**
++ * Copyright (c) 2025 OceanBase.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef OCEANBASE_SQL_RESOLVER_DML_OB_FILE_TABLE_DEF_H_
++#define OCEANBASE_SQL_RESOLVER_DML_OB_FILE_TABLE_DEF_H_
++
++#include "lib/string/ob_string.h"
++
++namespace oceanbase
++{
++namespace sql
++{
++
++// File formats understood by the read_xxx() table functions.
++enum ObFileSqlFormat
++{
++  FS_FMT_INVALID = 0,
++  FS_FMT_CSV = 1,
++  FS_FMT_JSONL = 2,
++  FS_FMT_PARQUET = 3,
++};
++
++// Logical (user visible) type of one column of a file table. It is only used
++// to describe the file schema; the values themselves are carried by the
++// values-table expressions.
++enum ObFileSqlType
++{
++  FS_TYPE_BIGINT = 0,
++  FS_TYPE_DOUBLE = 1,
++  FS_TYPE_BOOLEAN = 2,
++  FS_TYPE_VARCHAR = 3,
++  FS_TYPE_DATE = 4,
++  FS_TYPE_DATETIME = 5,
++  FS_TYPE_NULL = 6,
++  FS_TYPE_MAX,
++};
++
++const int64_t OB_FILE_MAX_COLUMN_CNT = 512;
++
++struct ObFileColumnDef
++{
++  ObFileColumnDef() : type_(FS_TYPE_NULL), nullable_(true) {}
++  common::ObString name_;
++  ObFileSqlType type_;
++  bool nullable_;
++};
++
++// Schema and metadata of a table produced by read_csv()/read_json()/
++// read_parquet()/glob(). The rows themselves are expanded into a values table
++// during resolution, so this struct only keeps the logical schema.
++struct ObFileTableDef
++{
++  ObFileTableDef()
++    : format_(FS_FMT_INVALID),
++      column_cnt_(0),
++      row_cnt_(0),
++      is_glob_(false) {}
++  ObFileSqlFormat format_;
++  common::ObString path_;
++  int64_t column_cnt_;
++  int64_t row_cnt_;
++  bool is_glob_;
++  ObFileColumnDef columns_[OB_FILE_MAX_COLUMN_CNT];
++
++  const char *get_type_name(const int64_t idx) const
++  {
++    static const char *type_names[FS_TYPE_MAX] = {
++      "BIGINT", "DOUBLE", "BOOLEAN", "VARCHAR", "DATE", "DATETIME", "NULL"
++    };
++    const char *name = "VARCHAR";
++    if (idx >= 0 && idx < column_cnt_) {
++      const ObFileSqlType type = columns_[idx].type_;
++      if (type >= FS_TYPE_BIGINT && type < FS_TYPE_MAX) {
++        name = type_names[static_cast<int>(type)];
++      }
++    }
++    return name;
++  }
++
++  int init(const ObFileSqlFormat format,
++           const common::ObString &path,
++           const int64_t column_cnt)
++  {
++    int ret = common::OB_SUCCESS;
++    if (column_cnt <= 0 || column_cnt > OB_FILE_MAX_COLUMN_CNT) {
++      ret = common::OB_INVALID_ARGUMENT;
++    } else {
++      format_ = format;
++      path_ = path;
++      column_cnt_ = column_cnt;
++    }
++    return ret;
++  }
++};
++
++}  // namespace sql
++}  // namespace oceanbase
++
++#endif  // OCEANBASE_SQL_RESOLVER_DML_OB_FILE_TABLE_DEF_H_
+diff --git a/src/sql/resolver/dml/ob_select_resolver.cpp b/src/sql/resolver/dml/ob_select_resolver.cpp
+index 8999dba87..c65bc73a7 100644
+--- a/src/sql/resolver/dml/ob_select_resolver.cpp
++++ b/src/sql/resolver/dml/ob_select_resolver.cpp
+@@ -1657,7 +1657,20 @@ int ObSelectResolver::expand_target_list(
+   } else if (table_item.is_values_table()) {
+     if (OB_ISNULL(get_stmt()) || OB_UNLIKELY(get_stmt()->get_column_size() == 0)) {
+       ret = OB_ERR_UNEXPECTED;
+-    } else if (OB_FAIL(append(column_items, get_stmt()->get_column_items()))) {
++    } else {
++      const common::ObIArray<ColumnItem> &stmt_columns = get_stmt()->get_column_items();
++      for (int64_t i = 0; OB_SUCC(ret) && i < stmt_columns.count(); ++i) {
++        const ColumnItem &col_item = stmt_columns.at(i);
++        if (col_item.table_id_ == table_item.table_id_) {
++          if (OB_FAIL(column_items.push_back(col_item))) {
++            SQL_RESV_LOG(WARN, "push back column item failed", K(ret));
++          }
++        }
++      }
++      if (OB_SUCC(ret) && column_items.empty()) {
++        ret = OB_ERR_BAD_FIELD_ERROR;
++        SQL_RESV_LOG(WARN, "the values table has no column", K(ret), K(table_item.table_id_));
++      }
+     }
+   } else {
+     ret = OB_ERR_UNEXPECTED;
+diff --git a/src/sql/resolver/dml/ob_select_stmt.cpp b/src/sql/resolver/dml/ob_select_stmt.cpp
+index 1d4d2eb08..c3f66e1a3 100644
+--- a/src/sql/resolver/dml/ob_select_stmt.cpp
++++ b/src/sql/resolver/dml/ob_select_stmt.cpp
+@@ -63,7 +63,9 @@ int ObSelectIntoItem::deep_copy(ObIAllocator &allocator,
+   buffer_size_ = other.buffer_size_;
+   user_vars_.assign(other.user_vars_);
+   if (OB_FAIL(ob_write_string(allocator, other.external_properties_, external_properties_))) {
++  } else if (OB_FAIL(ob_write_string(allocator, other.header_str_, header_str_))) {
+   }
++  has_header_ = other.has_header_;
+   for (int64_t i = 0; OB_SUCC(ret) && i < other.pl_vars_.count(); ++i) {
+     ObRawExpr* pl_var;
+     if (OB_FAIL(copier.copy(other.pl_vars_.at(i), pl_var))) {
+diff --git a/src/sql/resolver/dml/ob_select_stmt.h b/src/sql/resolver/dml/ob_select_stmt.h
+index 7c759996d..4d71c8678 100644
+--- a/src/sql/resolver/dml/ob_select_stmt.h
++++ b/src/sql/resolver/dml/ob_select_stmt.h
+@@ -128,7 +128,9 @@ struct ObSelectIntoItem
+         max_file_size_(DEFAULT_MAX_FILE_SIZE),
+         escaped_cht_(),
+         buffer_size_(DEFAULT_BUFFER_SIZE),
+-        external_properties_()
++        external_properties_(),
++        has_header_(false),
++        header_str_()
+   {
+     field_str_.set_varchar(DEFAULT_FIELD_TERM_STR);
+     field_str_.set_collation_type(ObCharset::get_system_collation());
+@@ -155,6 +157,8 @@ struct ObSelectIntoItem
+     cs_type_ = other.cs_type_;
+     buffer_size_ = other.buffer_size_;
+     external_properties_ = other.external_properties_;
++    has_header_ = other.has_header_;
++    header_str_ = other.header_str_;
+     return user_vars_.assign(other.user_vars_);
+   }
+   int deep_copy(ObIAllocator &allocator,
+@@ -171,7 +175,9 @@ struct ObSelectIntoItem
+                K_(escaped_cht),
+                K_(cs_type),
+                K_(buffer_size),
+-               K_(external_properties));
++               K_(external_properties),
++               K_(has_header),
++               K_(header_str));
+   ObItemType into_type_;
+   common::ObObj outfile_name_;
+   common::ObObj field_str_; // field terminated str
+@@ -186,6 +192,8 @@ struct ObSelectIntoItem
+   common::ObCollationType cs_type_;
+   int64_t buffer_size_;
+   common::ObString external_properties_;
++  bool has_header_;
++  common::ObString header_str_;
+ 
+   static const char* const DEFAULT_FIELD_TERM_STR;
+   static const char* const DEFAULT_LINE_TERM_STR;
+diff --git a/src/sql/resolver/ob_resolver.cpp b/src/sql/resolver/ob_resolver.cpp
+index 4ba76edd2..b768dec2d 100644
+--- a/src/sql/resolver/ob_resolver.cpp
++++ b/src/sql/resolver/ob_resolver.cpp
+@@ -43,6 +43,7 @@
+ #include "sql/resolver/ddl/ob_drop_database_resolver.h"
+ #include "sql/resolver/ddl/ob_create_view_resolver.h"
+ #include "sql/resolver/ddl/ob_explain_resolver.h"
++#include "sql/resolver/dml/ob_copy_resolver.h"
+ #include "sql/resolver/ddl/ob_create_outline_resolver.h"
+ #include "sql/resolver/ddl/ob_alter_outline_resolver.h"
+ #include "sql/resolver/ddl/ob_drop_outline_resolver.h"
+@@ -238,6 +239,10 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
+         REGISTER_SELECT_STMT_RESOLVER(Select);
+         break;
+       }
++      case T_COPY: {
++        REGISTER_STMT_RESOLVER(Copy);
++        break;
++      }
+       case T_INSERT: {
+         REGISTER_STMT_RESOLVER(Insert);
+         break;
+diff --git a/src/sql/session/ob_system_variable_factory.cpp b/src/sql/session/ob_system_variable_factory.cpp
+index 7c337ce66..4f4e7ff37 100644
+--- a/src/sql/session/ob_system_variable_factory.cpp
++++ b/src/sql/session/ob_system_variable_factory.cpp
+@@ -1273,6 +1273,7 @@ int ObSysVarFactory::create_all_sys_vars_()
+         + sizeof(ObSysVarObHnswExtraInfoMaxSize)
+         + sizeof(ObSysVarPushJoinPredicate)
+         + sizeof(ObSysVarObSparseDropRatioSearch)
++        + sizeof(ObSysVarEnableFileSql)
+         ;
+     void *ptr = NULL;
+     if (OB_ISNULL(ptr = allocator_.alloc(total_mem_size))) {
+@@ -7752,6 +7753,15 @@ int ObSysVarFactory::create_all_sys_vars_()
+         ptr = (void *)((char *)ptr + sizeof(ObSysVarObSparseDropRatioSearch));
+       }
+     }
++    if (OB_SUCC(ret)) {
++      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarEnableFileSql())) {
++        ret = OB_ALLOCATE_MEMORY_FAILED;
++        LOG_ERROR("fail to new ObSysVarEnableFileSql", K(ret));
++      } else {
++        store_buf_[share::ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(share::SYS_VAR_ENABLE_FILE_SQL))] = sys_var_ptr;
++        ptr = (void *)((char *)ptr + sizeof(ObSysVarEnableFileSql));
++      }
++    }
+ 
+   }
+   return ret;
+@@ -10653,6 +10663,10 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, share::ObSysVarCla
+       ret = create_one_sys_var<ObSysVarObSparseDropRatioSearch>(allocator_, sys_var_ptr, "ObSysVarObSparseDropRatioSearch");
+       break;
+     }
++    case share::SYS_VAR_ENABLE_FILE_SQL: {
++      ret = create_one_sys_var<ObSysVarEnableFileSql>(allocator_, sys_var_ptr, "ObSysVarEnableFileSql");
++      break;
++    }
+ 
+     default: {
+       ret = OB_ERR_UNEXPECTED;
+diff --git a/src/sql/session/ob_system_variable_factory.h b/src/sql/session/ob_system_variable_factory.h
+index f418bb47c..54c0cafed 100644
+--- a/src/sql/session/ob_system_variable_factory.h
++++ b/src/sql/session/ob_system_variable_factory.h
+@@ -5209,6 +5209,14 @@ public:
+   inline virtual const common::ObObj &get_global_default_value() const { return share::ObSysVariables::get_default_value(718); }
+ };
+ 
++class ObSysVarEnableFileSql : public ObBoolSysVar
++{
++public:
++  ObSysVarEnableFileSql() : ObBoolSysVar(NULL, NULL, NULL, NULL, NULL) {}
++  inline virtual share::ObSysVarClassType get_type() const { return share::SYS_VAR_ENABLE_FILE_SQL; }
++  inline virtual const common::ObObj &get_global_default_value() const { return share::ObSysVariables::get_default_value(719); }
++};
++
+ 
+ class ObSysVarFactory
+ {
+diff --git a/src/sql/sql_header_inventory.bzl b/src/sql/sql_header_inventory.bzl
+index 0c4427046..4d2043657 100644
+--- a/src/sql/sql_header_inventory.bzl
++++ b/src/sql/sql_header_inventory.bzl
+@@ -133,7 +133,10 @@ SQL_PUBLIC_HEADER_ROOTS = [
+     "resolver/ddl/ob_vec_index_builder_util.h",
+     "resolver/dml/ob_delete_resolver.h",
+     "resolver/dml/ob_dml_resolver.h",
++    "resolver/dml/ob_copy_resolver.h",
+     "resolver/dml/ob_dml_stmt.h",
++    "resolver/dml/ob_file_sql_utils.h",
++    "resolver/dml/ob_file_table_def.h",
+     "resolver/dml/ob_select_resolver.h",
+     "resolver/expr/ob_raw_expr.h",
+     "resolver/expr/ob_raw_expr_modify_column_name.h",
+diff --git a/src/sql/sql_source_inventory.bzl b/src/sql/sql_source_inventory.bzl
+index 5dc93bfbf..96b3906f4 100644
+--- a/src/sql/sql_source_inventory.bzl
++++ b/src/sql/sql_source_inventory.bzl
+@@ -1495,6 +1495,7 @@ SQL_UNITY_GROUPS = [
+             "src/sql/resolver/dml/ob_delete_resolver.cpp",
+             "src/sql/resolver/dml/ob_delete_stmt.cpp",
+             "src/sql/resolver/dml/ob_dml_resolver.cpp",
++            "src/sql/resolver/dml/ob_copy_resolver.cpp",
+             "src/sql/resolver/dml/ob_dml_stmt.cpp",
+             "src/sql/resolver/dml/ob_group_by_checker.cpp",
+             "src/sql/resolver/dml/ob_insert_resolver.cpp",
+@@ -1510,6 +1511,7 @@ SQL_UNITY_GROUPS = [
+             "src/sql/resolver/dml/ob_update_stmt.cpp",
+             "src/sql/resolver/dml/ob_view_table_resolver.cpp",
+             "src/sql/resolver/dml/ob_inlist_resolver.cpp",
++            "src/sql/resolver/dml/ob_file_sql_utils.cpp",
+         ],
+         generated_srcs = [],
+         external_srcs = [],
