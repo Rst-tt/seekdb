@@ -62,6 +62,7 @@ private:
 private:
   ObArenaAllocator alloc_;
   hash::ObHashMap<int64_t, ObIKTokenChain *> chains_;
+  bool created_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);
