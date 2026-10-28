@@ -11,14 +11,15 @@
 | 项 | 值 |
 | --- | --- |
 | 仓库 | `https://github.com/Rst-tt/seekdb.git`（fork of `oceanbase/seekdb`） |
-| 官方基线 | `2026-competition` = `5bce9e06d1`（含 file_sql / ai_function 公开用例） |
-| 整合分支（赛题一~四） | **`submission/2026-competition-all`** |
+| **本次提测分支** | **`2026-competition`**（四个赛题一次提测：该分支已由官方基线快进到赛题一~四整合树） |
+| 官方基线（纯净） | `base/2026-competition` = `5bce9e06d1`（官方 `2026-competition` 原始基线，含 file_sql / ai_function 公开用例） |
 | 整合实现 commit | **`97e868a2c`**（赛题一~四 全部实现；其后仅有文档补充提交） |
-| 本赛题纯净分支 | **`submission/file-sql`**（官方 `2026-competition` 基线 + 赛题二实现，无其它赛题改动） |
+| 同内容分支（备选） | `submission/2026-competition-all`（与提测分支同一 commit） |
+| 本赛题纯净分支 | **`submission/file-sql`**（官方基线 + 赛题二实现，无其它赛题改动） |
 | 本赛题实现 commit | **`e523609b5`**（`64d545eb2` 的等价 cherry-pick） |
 | 纯净备选分支 | `feat/file-sql`（`afa899076`，与 `submission/file-sql` 同源） |
 
-`submission/2026-competition-all` 的提交历史（自下而上）：
+`2026-competition`（提测分支）的提交历史（自下而上）：
 `5bce9e0` 官方 `2026-competition` 基线（含 file_sql / ai_function 公开用例）
 → `92363d75d`、`c6c4e4f7d` 赛题一 AI 函数增强 → `64d545eb2` **本赛题二实现** → `bc00f3cd3` FTS 热路径优化
 → `97e868a2c` **赛题三 AI 列整合**（赛题一~四 合并树，赛题二以 resolver 路线为准）。
