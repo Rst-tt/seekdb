@@ -622,6 +622,8 @@ public:
   // sql from obclient, proxy, PL are all marked as user_session
   // NOTE: for sql from PL, is_inner() = true, is_user_session() = true
   inline bool is_user_session() const { return USER_SESSION == session_type_; }
+  inline void set_ai_column_strict_read(bool strict_read) { ai_column_strict_read_ = strict_read; }
+  inline bool get_ai_column_strict_read() const { return ai_column_strict_read_; }
   bool is_inner() const
   {
     return inner_flag_;
@@ -909,6 +911,7 @@ private:
   // in_transaction_ has been merged into trans_flags_.
 //  int64_t has_write_stmt_in_trans_;
   bool inner_flag_; // whether it is a virtual session for an internal request
+  bool ai_column_strict_read_;
   // After version 2.2, this variable is no longer used
   bool is_max_availability_mode_;
   typedef common::hash::ObHashMap<ObPsStmtId, ObPsSessionInfo *,

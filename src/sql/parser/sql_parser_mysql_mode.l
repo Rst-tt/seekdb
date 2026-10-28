@@ -1480,6 +1480,7 @@ BEGIN(in_c_comment);
 }
 ":="  {return SET_VAR;}
 "<=>"  {return COMP_NSEQ;}
+"=>"  {return PARAM_ASSIGN;}
 ">=" {return COMP_GE;}
 ">"  {return COMP_GT;}
 "<=" {return COMP_LE;}

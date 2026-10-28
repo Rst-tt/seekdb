@@ -670,6 +670,9 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
     }
 
     int64_t resolved_cols_count = resolved_cols.count();
+    bool ai_gen_column_added = false;
+    uint64_t ai_gen_column_id = OB_INVALID_ID;
+    ObSEArray<ObColumnSchemaV2, 4> ai_hidden_cols;
     // Second pass traversal, use resolved_cols to parse out all column schema and save to table_schema
     // And parse index etc
     for (int32_t i = 0, ele_pos = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
@@ -735,6 +738,52 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
 
           if (OB_SUCC(ret) && column.is_generated_column()) {
             if (OB_FAIL(column.set_orig_default_value(column.get_cur_default_value()))) {
+            }
+          }
+          if (OB_SUCC(ret) && column.is_ai_column()) {
+            if (!ai_gen_column_added) {
+              ObColumnSchemaV2 gen_col;
+              gen_col.set_table_id(table_schema.get_table_id());
+              gen_col.set_column_id(gen_column_id());
+              gen_col.set_data_type(ObIntType);
+              gen_col.set_nullable(false);
+              gen_col.set_is_hidden(true);
+              gen_col.set_charset_type(CHARSET_BINARY);
+              gen_col.set_collation_type(CS_TYPE_BINARY);
+              ObObj zero_value;
+              zero_value.set_int(0);
+              if (OB_FAIL(gen_col.set_column_name("__ai_gen"))) {
+              } else if (OB_FAIL(gen_col.set_orig_default_value(zero_value))) {
+              } else if (OB_FAIL(gen_col.set_cur_default_value(zero_value, false))) {
+              } else if (OB_FAIL(ai_hidden_cols.push_back(gen_col))) {
+              } else {
+                ai_gen_column_id = gen_col.get_column_id();
+                ai_gen_column_added = true;
+              }
+            }
+            ObColumnSchemaV2 status_col;
+            status_col.set_table_id(table_schema.get_table_id());
+            status_col.set_column_id(gen_column_id());
+            status_col.set_data_type(ObIntType);
+            status_col.set_nullable(false);
+            status_col.set_is_hidden(true);
+            status_col.set_charset_type(CHARSET_BINARY);
+            status_col.set_collation_type(CS_TYPE_BINARY);
+            char name_buf[OB_MAX_COLUMN_NAME_LENGTH] = {0};
+            int64_t name_pos = 0;
+            if (OB_FAIL(databuff_printf(name_buf, OB_MAX_COLUMN_NAME_LENGTH, name_pos,
+                                        "__ai_status_%lu", column.get_column_id()))) {
+            } else if (OB_FAIL(status_col.set_column_name(ObString(
+                           static_cast<int32_t>(name_pos), name_buf)))) {
+            } else {
+              ObObj default_value;
+              default_value.set_int(0);
+              if (OB_FAIL(status_col.set_orig_default_value(default_value))) {
+              } else if (OB_FAIL(status_col.set_cur_default_value(default_value, false))) {
+              } else if (OB_FAIL(column.set_ai_column_status_column_id(status_col.get_column_id()))) {
+              } else if (OB_FAIL(column.set_ai_column_gen_column_id(ai_gen_column_id))) {
+              } else if (OB_FAIL(ai_hidden_cols.push_back(status_col))) {
+              }
             }
           }
           if (OB_SUCC(ret)){
@@ -891,6 +940,54 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
         } else {
           ObColumnNameHashWrapper name_key(hidden_col.get_column_name_str());
           if (OB_FAIL(column_name_set_.set_refactored(name_key))) {
+          }
+        }
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < ai_hidden_cols.count(); ++i) {
+        ObColumnSchemaV2 &hidden_col = ai_hidden_cols.at(i);
+        if (OB_FAIL(table_schema.add_column(hidden_col))) {
+        } else {
+          ObColumnNameHashWrapper name_key(hidden_col.get_column_name_str());
+          if (OB_FAIL(column_name_set_.set_refactored(name_key))) {
+          }
+        }
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      for (ObTableSchema::const_column_iterator iter = table_schema.column_begin();
+           OB_SUCC(ret) && iter != table_schema.column_end(); ++iter) {
+        ObColumnSchemaV2 *ai_column = *iter;
+        if (OB_ISNULL(ai_column)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (!ai_column->is_ai_column()) {
+          // do nothing
+        } else {
+          ObString dep_names = ai_column->get_ai_column_dep_names();
+          int64_t start = 0;
+          while (OB_SUCC(ret) && start <= dep_names.length()) {
+            int64_t end = start;
+            while (end < dep_names.length() && dep_names[end] != '\x1f') {
+              ++end;
+            }
+            if (end > start) {
+              ObString dep_name(end - start, dep_names.ptr() + start);
+              ObColumnSchemaV2 *dep_column = table_schema.get_column_schema(dep_name);
+              if (OB_ISNULL(dep_column)) {
+                ret = OB_ERR_BAD_FIELD_ERROR;
+                LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, dep_name.length(), dep_name.ptr(),
+                               table_schema.get_table_name_str().length(),
+                               table_schema.get_table_name_str().ptr());
+              } else if (OB_FAIL(ai_column->add_cascaded_column_id(dep_column->get_column_id()))) {
+              }
+            }
+            if (OB_SUCC(ret) && end >= dep_names.length()) {
+              break;
+            }
+            start = end + 1;
           }
         }
       }

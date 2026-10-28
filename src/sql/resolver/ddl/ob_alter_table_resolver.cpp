@@ -25,6 +25,9 @@
 #include "sql/session/ob_local_session_var.h"
 #include "query/command/ob_root_command_service.h"
 #include "query/vector/ob_vector_index_util.h"
+#include "common/mysqlclient/ob_mysql_proxy.h"
+#include "lib/string/ob_sql_string.h"
+#include "share/ob_server_struct.h"
 
 namespace oceanbase
 {
@@ -826,6 +829,11 @@ int ObAlterTableResolver::resolve_column_options(const ParseNode &node,
           } else if (OB_ISNULL(session_info_)) {
             ret = OB_ERR_UNEXPECTED;
           } else if (OB_FAIL(resolve_alter_table_force(*column_node))) {
+          }
+          break;
+        }
+        case T_RETRY_AI_COLUMN: {
+          if (OB_FAIL(resolve_retry_ai_column(*column_node))) {
           }
           break;
         }
@@ -3391,6 +3399,152 @@ int ObAlterTableResolver::process_timestamp_column(ObColumnResolveStat &stat,
   return ret;
 }
 
+namespace
+{
+bool is_ident_char(char c)
+{
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+      || (c >= '0' && c <= '9') || c == '_' || c == '$';
+}
+
+int rewrite_retry_condition(const char *src,
+                            int64_t len,
+                            const ObString &status_name,
+                            ObSqlString &out)
+{
+  int ret = OB_SUCCESS;
+  int64_t i = 0;
+  while (OB_SUCC(ret) && i < len) {
+    const char c = src[i];
+    if ('`' == c) {
+      int64_t start = i++;
+      while (i < len && src[i] != '`') {
+        ++i;
+      }
+      if (i < len) {
+        ++i;
+      }
+      if (OB_FAIL(out.append(src + start, i - start))) {
+      }
+    } else if ('\'' == c || '"' == c) {
+      const char quote = c;
+      int64_t start = i++;
+      while (i < len && src[i] != quote) {
+        if ('\\' == src[i] && i + 1 < len) {
+          ++i;
+        }
+        ++i;
+      }
+      if (i < len) {
+        ++i;
+      }
+      ObString literal(static_cast<int32_t>(i - start - 2), src + start + 1);
+      if (0 == literal.case_compare("FAILED")) {
+        ret = out.append("2");
+      } else if (0 == literal.case_compare("READY")) {
+        ret = out.append("1");
+      } else if (0 == literal.case_compare("PENDING")) {
+        ret = out.append("0");
+      } else {
+        ret = out.append(src + start, i - start);
+      }
+    } else if (is_ident_char(c)) {
+      int64_t start = i;
+      while (i < len && is_ident_char(src[i])) {
+        ++i;
+      }
+      ObString ident(static_cast<int32_t>(i - start), src + start);
+      if (0 == ident.case_compare("status")) {
+        if (OB_FAIL(out.append("`"))) {
+        } else if (OB_FAIL(out.append(status_name.ptr(), status_name.length()))) {
+        } else if (OB_FAIL(out.append("`"))) {
+        }
+      } else if (OB_FAIL(out.append(ident.ptr(), ident.length()))) {
+      }
+    } else {
+      if (OB_FAIL(out.append(src + i, 1))) {
+      }
+      ++i;
+    }
+  }
+  return ret;
+}
+} // namespace
+
+int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
+{
+  int ret = OB_SUCCESS;
+  const ParseNode *column_node = node.num_child_ > 0 ? node.children_[0] : NULL;
+  const ParseNode *where_node = node.num_child_ > 1 ? node.children_[1] : NULL;
+  const ObColumnSchemaV2 *ai_column = NULL;
+  const ObColumnSchemaV2 *status_column = NULL;
+  const ObDatabaseSchema *db_schema = NULL;
+  ObString column_name;
+  if (OB_ISNULL(column_node) || column_node->str_len_ <= 0
+      || OB_ISNULL(column_node->str_value_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(table_schema_) || OB_ISNULL(schema_checker_)
+             || OB_ISNULL(session_info_) || OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_NOT_INIT;
+  } else {
+    column_name.assign_ptr(column_node->str_value_, static_cast<int32_t>(column_node->str_len_));
+    if (OB_ISNULL(ai_column = table_schema_->get_column_schema(column_name))
+        || !ai_column->is_ai_column()) {
+      ret = OB_ERR_BAD_FIELD_ERROR;
+      LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, column_name.length(), column_name.ptr(),
+                     table_schema_->get_table_name_str().length(),
+                     table_schema_->get_table_name_str().ptr());
+    } else if (OB_ISNULL(status_column = table_schema_->get_column_schema(
+                           ai_column->get_ai_column_status_column_id()))) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(schema_checker_->get_database_schema(table_schema_->get_database_id(),
+                                                            db_schema))) {
+    } else if (OB_ISNULL(db_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+    }
+  }
+  if (OB_SUCC(ret)) {
+    const ObString &db_name = db_schema->get_database_name_str();
+    const ObString &table_name = table_schema_->get_table_name_str();
+    ObSqlString sql;
+    if (OB_FAIL(sql.append_fmt("UPDATE `%.*s`.`%.*s` SET `%.*s` = NULL, `%.*s` = 0",
+                               db_name.length(), db_name.ptr(),
+                               table_name.length(), table_name.ptr(),
+                               ai_column->get_column_name_str().length(),
+                               ai_column->get_column_name(),
+                               status_column->get_column_name_str().length(),
+                               status_column->get_column_name()))) {
+    } else if (OB_NOT_NULL(where_node)) {
+      const ParseNode *condition_node = where_node->num_child_ > 0
+                                            ? where_node->children_[0] : NULL;
+      ObString condition_str;
+      ObSqlString condition;
+      if (OB_ISNULL(condition_node) || condition_node->str_len_ <= 0
+          || OB_ISNULL(condition_node->str_value_)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        condition_str.assign_ptr(condition_node->str_value_,
+                                 static_cast<int32_t>(condition_node->str_len_));
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(rewrite_retry_condition(condition_str.ptr(),
+                                                 condition_str.length(),
+                                                 status_column->get_column_name_str(),
+                                                 condition))) {
+      } else if (OB_FAIL(sql.append(" WHERE "))) {
+      } else if (OB_FAIL(sql.append(condition.ptr()))) {
+      }
+    }
+    if (OB_SUCC(ret)) {
+      int64_t affected_rows = 0;
+      if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
+        LOG_WARN("retry ai column failed", K(ret), K(sql));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObAlterTableResolver::resolve_add_column(const ParseNode &node, ObColumnNameSet &add_column_names_set)
 {
   int ret = OB_SUCCESS;
@@ -3541,7 +3695,8 @@ int ObAlterTableResolver::resolve_alter_table_column_definition(AlterColumnSchem
   // }
   if (OB_SUCC(ret)) {
     ParseNode *pos_node = NULL;
-    if (OB_UNLIKELY(GEN_COLUMN_DEFINITION_NUM_CHILD == node->num_child_)) {
+    if (OB_UNLIKELY(GEN_COLUMN_DEFINITION_NUM_CHILD == node->num_child_)
+        || OB_UNLIKELY(AI_COLUMN_DEFINITION_NUM_CHILD == node->num_child_)) {
     // generated column with pos_column
       pos_node = node->children_[5];
     } else {

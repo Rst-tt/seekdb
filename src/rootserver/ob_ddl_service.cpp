@@ -7819,6 +7819,12 @@ int ObDDLService::add_new_column_to_table_schema(
     } else if (OB_FAIL(new_table_schema.check_primary_key_cover_partition_column())) {
     } else if (OB_FAIL(update_prev_id_and_add_column_(origin_table_schema,
                new_table_schema, alter_column_schema, ddl_operator, trans))) {
+    } else if (alter_column_schema.is_ai_column()
+               && OB_FAIL(add_ai_column_hidden_columns_(new_table_schema,
+                                                        alter_column_schema,
+                                                        ddl_operator,
+                                                        trans,
+                                                        update_inner_table))) {
     } else if (OB_ISNULL(mem_col = new_table_schema.get_column_schema(
                                     alter_column_schema.get_column_id()))) {
       ret = OB_ERR_UNEXPECTED;
@@ -8224,6 +8230,77 @@ int ObDDLService::update_prev_id_and_add_column_(
     if (OB_ERR_COLUMN_DUPLICATE == ret) {
       const ObString &column_name = alter_column_schema.get_column_name_str();
       LOG_USER_ERROR(OB_ERR_COLUMN_DUPLICATE, column_name.length(), column_name.ptr());
+    }
+  }
+  return ret;
+}
+
+int ObDDLService::add_ai_column_hidden_columns_(
+    ObTableSchema &new_table_schema,
+    AlterColumnSchema &ai_column,
+    ObDDLOperator *ddl_operator,
+    common::ObMySQLTransaction *trans,
+    bool update_inner_table)
+{
+  int ret = OB_SUCCESS;
+  uint64_t gen_column_id = OB_INVALID_ID;
+  const ObColumnSchemaV2 *exist_gen = new_table_schema.get_column_schema("__ai_gen");
+  if (OB_NOT_NULL(exist_gen)) {
+    gen_column_id = exist_gen->get_column_id();
+  } else {
+    ObColumnSchemaV2 gen_column;
+    gen_column.set_table_id(new_table_schema.get_table_id());
+    gen_column.set_column_id(new_table_schema.get_max_used_column_id() + 1);
+    gen_column.set_data_type(ObIntType);
+    gen_column.set_nullable(false);
+    gen_column.set_is_hidden(true);
+    gen_column.set_charset_type(CHARSET_BINARY);
+    gen_column.set_collation_type(CS_TYPE_BINARY);
+    ObObj zero_value;
+    zero_value.set_int(0);
+    if (OB_FAIL(gen_column.set_column_name("__ai_gen"))) {
+    } else if (OB_FAIL(gen_column.set_orig_default_value(zero_value))) {
+    } else if (OB_FAIL(gen_column.set_cur_default_value(zero_value, false))) {
+    } else if (OB_FAIL(new_table_schema.add_column(gen_column))) {
+    } else {
+      new_table_schema.set_max_used_column_id(gen_column.get_column_id());
+      gen_column_id = gen_column.get_column_id();
+      if (update_inner_table
+          && OB_FAIL(ddl_operator->insert_single_column(*trans,
+                                                        new_table_schema,
+                                                        gen_column))) {
+      }
+    }
+  }
+  ObColumnSchemaV2 status_column;
+  status_column.set_table_id(new_table_schema.get_table_id());
+  status_column.set_column_id(new_table_schema.get_max_used_column_id() + 1);
+  status_column.set_data_type(ObIntType);
+  status_column.set_nullable(false);
+  status_column.set_is_hidden(true);
+  status_column.set_charset_type(CHARSET_BINARY);
+  status_column.set_collation_type(CS_TYPE_BINARY);
+  char status_name[OB_MAX_COLUMN_NAME_LENGTH] = {0};
+  int64_t status_name_pos = 0;
+  ObObj zero_value;
+  zero_value.set_int(0);
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(databuff_printf(status_name, sizeof(status_name), status_name_pos,
+                                     "__ai_status_%lu", ai_column.get_column_id()))) {
+  } else if (OB_FAIL(status_column.set_column_name(
+                       ObString(status_name_pos, status_name)))) {
+  } else if (OB_FAIL(status_column.set_orig_default_value(zero_value))) {
+  } else if (OB_FAIL(status_column.set_cur_default_value(zero_value, false))) {
+  } else if (OB_FAIL(new_table_schema.add_column(status_column))) {
+  } else {
+    new_table_schema.set_max_used_column_id(status_column.get_column_id());
+    if (update_inner_table
+        && OB_FAIL(ddl_operator->insert_single_column(*trans,
+                                                      new_table_schema,
+                                                      status_column))) {
+    } else if (OB_FAIL(ai_column.set_ai_column_gen_column_id(gen_column_id))) {
+    } else if (OB_FAIL(ai_column.set_ai_column_status_column_id(
+                         status_column.get_column_id()))) {
     }
   }
   return ret;

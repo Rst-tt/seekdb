@@ -34,6 +34,13 @@ using namespace pl;
 namespace sql
 {
 
+static const ObColumnSchemaV2 *get_ai_owner_by_status_column(
+    const ObTableSchema &table_schema,
+    uint64_t status_column_id);
+static const ObColumnSchemaV2 *get_ai_owner_by_gen_column(
+    const ObTableSchema &table_schema,
+    uint64_t gen_column_id);
+
 int ObTableAssignment::expand_expr(ObRawExprFactory &expr_factory,
                                    const ObIArray<ObAssignment> &assigns,
                                    ObRawExpr *&expr)
@@ -135,6 +142,9 @@ int ObDelUpdResolver::resolve_assignments(const ParseNode &parse_node,
             ObDefaultValueUtils utils(stmt, &params_, this);
             if (OB_FAIL(utils.resolve_default_expr(*column, expr, scope))) {
             }
+          } else if (!session_info_->is_inner() && ref_expr->is_ai_column()) {
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "direct assignment to ai column is not allowed");
           } else if (is_generated_column) {
             ret = OB_NON_DEFAULT_VALUE_FOR_GENERATED_COLUMN;
             const ObString &column_name = ref_expr->get_column_name();
@@ -518,6 +528,28 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
                                                                  assigns.at(i).assignments_,
                                                                  update_with_vector_index))) {
     } else {
+      if (T_UPDATE_SCOPE == scope) {
+        for (ObTableSchema::const_column_iterator iter = table_schema->column_begin();
+             OB_SUCC(ret) && !update_with_vector_index && iter != table_schema->column_end();
+             ++iter) {
+          const ObColumnSchemaV2 *ai_column = *iter;
+          bool need_assign = false;
+          if (OB_NOT_NULL(ai_column) && ai_column->is_ai_column()
+              && ai_column->is_collection()
+              && !ai_column->get_ai_column_embed_model().empty()) {
+            if (OB_FAIL(check_need_assignment(assigns.at(i).assignments_,
+                                              table_item->table_id_,
+                                              trigger_exist,
+                                              *table_schema,
+                                              *ai_column,
+                                              scope,
+                                              need_assign))) {
+            } else if (need_assign) {
+              update_with_vector_index = true;
+            }
+          }
+        }
+      }
       for (ObTableSchema::const_column_iterator iter = table_schema->column_begin();
           (OB_SUCCESS == ret && iter != table_schema->column_end()); ++iter) {
         ColumnItem *col_item = NULL;
@@ -532,7 +564,9 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
         } else if (OB_FAIL(check_need_assignment(assigns.at(i).assignments_,
                                                  table_item->table_id_,
                                                  trigger_exist,
+                                                 *table_schema,
                                                  *column_schema,
+                                                 scope,
                                                  need_assigned))) {
         } else if (FALSE_IT(need_assigned = need_assigned || 
                                             ((column_schema->is_vec_hnsw_vid_column() ||
@@ -553,7 +587,36 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
           } else {
             assignment.column_expr_ = col_item->expr_;
             assignment.is_implicit_ = true;
-            if (column_schema->is_on_update_current_timestamp()) {
+            if (column_schema->is_ai_column()) {
+              if (OB_FAIL(ObRawExprUtils::build_null_expr(*params_.expr_factory_,
+                                                          assignment.expr_))) {
+              }
+            } else if (OB_NOT_NULL(get_ai_owner_by_status_column(*table_schema,
+                                                                 column_schema->get_column_id()))) {
+              ObConstRawExpr *zero_expr = NULL;
+              if (OB_FAIL(ObRawExprUtils::build_const_int_expr(*params_.expr_factory_,
+                                                               ObIntType,
+                                                               0,
+                                                               zero_expr))) {
+              } else {
+                assignment.expr_ = zero_expr;
+              }
+            } else if (OB_NOT_NULL(get_ai_owner_by_gen_column(*table_schema,
+                                                              column_schema->get_column_id()))) {
+              ObConstRawExpr *one_expr = NULL;
+              ObOpRawExpr *add_expr = NULL;
+              if (OB_FAIL(ObRawExprUtils::build_const_int_expr(*params_.expr_factory_,
+                                                               ObIntType,
+                                                               1,
+                                                               one_expr))) {
+              } else if (OB_FAIL(ObRawExprUtils::build_add_expr(*params_.expr_factory_,
+                                                                col_item->expr_,
+                                                                one_expr,
+                                                                add_expr))) {
+              } else {
+                assignment.expr_ = add_expr;
+              }
+            } else if (column_schema->is_on_update_current_timestamp()) {
               assignment.column_expr_->set_result_flag(ON_UPDATE_NOW_FLAG);
               ObDefaultValueUtils utils(stmt, &params_, this);
               if (OB_FAIL(utils.build_now_expr(col_item, assignment.expr_))) {
@@ -700,10 +763,44 @@ int ObDelUpdResolver::add_assignment(common::ObIArray<ObTableAssignment> &assign
   return ret;
 }
 
+static const ObColumnSchemaV2 *get_ai_owner_by_status_column(
+    const ObTableSchema &table_schema,
+    uint64_t status_column_id)
+{
+  const ObColumnSchemaV2 *owner = NULL;
+  for (ObTableSchema::const_column_iterator iter = table_schema.column_begin();
+       OB_ISNULL(owner) && iter != table_schema.column_end(); ++iter) {
+    const ObColumnSchemaV2 *candidate = *iter;
+    if (OB_NOT_NULL(candidate) && candidate->is_ai_column()
+        && candidate->get_ai_column_status_column_id() == status_column_id) {
+      owner = candidate;
+    }
+  }
+  return owner;
+}
+
+static const ObColumnSchemaV2 *get_ai_owner_by_gen_column(
+    const ObTableSchema &table_schema,
+    uint64_t gen_column_id)
+{
+  const ObColumnSchemaV2 *owner = NULL;
+  for (ObTableSchema::const_column_iterator iter = table_schema.column_begin();
+       OB_ISNULL(owner) && iter != table_schema.column_end(); ++iter) {
+    const ObColumnSchemaV2 *candidate = *iter;
+    if (OB_NOT_NULL(candidate) && candidate->is_ai_column()
+        && candidate->get_ai_column_gen_column_id() == gen_column_id) {
+      owner = candidate;
+    }
+  }
+  return owner;
+}
+
 int ObDelUpdResolver::check_need_assignment(const common::ObIArray<ObAssignment> &assigns,
                                             uint64_t table_id,
                                             bool before_update_row_trigger_exist,
+                                            const ObTableSchema &table_schema,
                                             const ObColumnSchemaV2 &column,
+                                            const ObStmtScope scope,
                                             bool &need_assign)
 {
   need_assign = false;
@@ -712,28 +809,88 @@ int ObDelUpdResolver::check_need_assignment(const common::ObIArray<ObAssignment>
   ObDMLStmt *stmt = get_stmt();
   if (OB_ISNULL(stmt)) {
     ret = OB_NOT_INIT;
-  } else if (column.is_generated_column()) {
-    if (OB_FAIL(ObResolverUtils::check_whether_assigned(stmt, assigns, table_id, column.get_column_id(), exist))) {
-    } else if (!exist) {
-      ObArray<uint64_t> cascaded_columns;
-      if (OB_FAIL(column.get_cascaded_column_ids(cascaded_columns))) {
+  } else if (column.is_ai_column()) {
+    if (T_INSERT_SCOPE == scope) {
+      need_assign = false;
+    } else {
+      ObString dep_names = column.get_ai_column_dep_names();
+      int64_t start = 0;
+      while (OB_SUCC(ret) && !exist && start <= dep_names.length()) {
+      int64_t end = start;
+      while (end < dep_names.length() && dep_names[end] != '\x1f') {
+        ++end;
       }
-      for (int64_t i = 0; OB_SUCC(ret) && !exist && i < cascaded_columns.count(); ++i) {
-        if (OB_FAIL(ObResolverUtils::check_whether_assigned(stmt, assigns, table_id, cascaded_columns.at(i), exist))) {
+      if (end > start) {
+        ObString dep_name(end - start, dep_names.ptr() + start);
+        const ObColumnSchemaV2 *dep_column = table_schema.get_column_schema(dep_name);
+        if (OB_NOT_NULL(dep_column)
+            && OB_FAIL(ObResolverUtils::check_whether_assigned(
+                   stmt, assigns, table_id, dep_column->get_column_id(), exist))) {
         }
       }
-      if (OB_SUCC(ret) && exist) {
-        //the generated column isn't assigned, but the cascaded columns have been assigned
-        //so assign the generated column
-        need_assign = true;
+      if (end >= dep_names.length()) {
+        break;
+      }
+      start = end + 1;
+    }
+    // A primary key change also invalidates the AI result.
+    for (ObTableSchema::const_column_iterator iter = table_schema.column_begin();
+         OB_SUCC(ret) && !exist && iter != table_schema.column_end(); ++iter) {
+      const ObColumnSchemaV2 *key_column = *iter;
+      if (OB_NOT_NULL(key_column) && key_column->is_rowkey_column()
+          && OB_FAIL(ObResolverUtils::check_whether_assigned(
+                 stmt, assigns, table_id, key_column->get_column_id(), exist))) {
       }
     }
-  } else if (column.is_on_update_current_timestamp() || before_update_row_trigger_exist) {
-    if (column.get_column_id() == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
-      // for heap_table the hidden_pk should not be updated
-    } else if (OB_FAIL(ObResolverUtils::check_whether_assigned(stmt, assigns, table_id, column.get_column_id(), exist))) {
-    } else if (!exist) {
-      need_assign = true;
+    if (OB_SUCC(ret)) {
+      need_assign = exist;
+    }
+    }
+  } else {
+    const ObColumnSchemaV2 *owner_ai_column =
+        get_ai_owner_by_status_column(table_schema, column.get_column_id());
+    if (OB_ISNULL(owner_ai_column)) {
+      owner_ai_column = get_ai_owner_by_gen_column(table_schema, column.get_column_id());
+    }
+    if (OB_SUCC(ret) && OB_NOT_NULL(owner_ai_column)) {
+      if (T_INSERT_SCOPE == scope) {
+        need_assign = false;
+      } else {
+        bool owner_need_assign = false;
+        if (OB_FAIL(check_need_assignment(assigns,
+                                          table_id,
+                                          before_update_row_trigger_exist,
+                                          table_schema,
+                                          *owner_ai_column,
+                                          scope,
+                                          owner_need_assign))) {
+        } else {
+          need_assign = owner_need_assign;
+        }
+      }
+    }
+    if (OB_SUCC(ret) && !need_assign && column.is_generated_column()) {
+      if (OB_FAIL(ObResolverUtils::check_whether_assigned(stmt, assigns, table_id, column.get_column_id(), exist))) {
+      } else if (!exist) {
+        ObArray<uint64_t> cascaded_columns;
+        if (OB_FAIL(column.get_cascaded_column_ids(cascaded_columns))) {
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && !exist && i < cascaded_columns.count(); ++i) {
+          if (OB_FAIL(ObResolverUtils::check_whether_assigned(stmt, assigns, table_id, cascaded_columns.at(i), exist))) {
+          }
+        }
+        if (OB_SUCC(ret) && exist) {
+          need_assign = true;
+        }
+      }
+    } else if (OB_SUCC(ret) && !need_assign
+               && (column.is_on_update_current_timestamp() || before_update_row_trigger_exist)) {
+      if (column.get_column_id() == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
+        // for heap_table the hidden_pk should not be updated
+      } else if (OB_FAIL(ObResolverUtils::check_whether_assigned(stmt, assigns, table_id, column.get_column_id(), exist))) {
+      } else if (!exist) {
+        need_assign = true;
+      }
     }
   }
   return ret;
@@ -2342,6 +2499,9 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
               }
             } else if (OB_FAIL(check_basic_column_generated(column_expr, del_upd_stmt,
                                                             is_generated_column))) {
+            } else if (!session_info_->is_inner() && column_expr->is_ai_column()) {
+              ret = OB_NOT_SUPPORTED;
+              LOG_USER_ERROR(OB_NOT_SUPPORTED, "direct assignment to ai column is not allowed");
             } else if (is_generated_column) {
               ret = OB_NON_DEFAULT_VALUE_FOR_GENERATED_COLUMN;
               ColumnItem *orig_col_item = NULL;

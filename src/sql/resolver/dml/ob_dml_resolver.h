@@ -365,6 +365,8 @@ protected:
                                 bool include_hidden,
                                 ColumnItem *&col_item,
                                 ObDMLStmt *stmt = NULL);
+  int check_ai_column_strict_read(const share::schema::ObTableSchema &table_schema,
+                                  const share::schema::ObColumnSchemaV2 &ai_column);
   int adjust_values_desc_position(ObInsertTableInfo& table_info,
                                   ObIArray<int64_t> &value_idxs);
 public:
