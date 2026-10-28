@@ -11,13 +11,11 @@ import shlex
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_PACKAGES = ("zlib", "openssl", "curl", "lzma", "libxml2", "protobuf-c", "icu")
-ICU_SOURCE = json.loads((ROOT / "bazel/sdk_sources/dependencies.json").read_text())["sources"]["icu"]
+DEFAULT_PACKAGES = ("zlib", "openssl", "curl", "lzma", "libxml2", "protobuf-c")
 
 PACKAGES = {
     "lzma": ("5.4.7", "https://codeload.github.com/tukaani-project/xz/tar.gz/refs/tags/v5.4.7",
              "87ef1bb0183ce477ba3ddb2700000b4c1e723f8d984e8f678dddcb11c5bf4f99"),
-    "icu": tuple(ICU_SOURCE[key] for key in ("version", "url", "sha256")),
     "libxml2": ('2.10.4', 'https://codeload.github.com/GNOME/libxml2/tar.gz/refs/tags/v2.10.4',
         '6f6fb27f91bb65f9d7196e3c616901b3e18a7dea31ccc2ae857940b125faa780'),
     "protobuf-c": ('1.4.1', 'https://codeload.github.com/protobuf-c/protobuf-c/tar.gz/refs/tags/v1.4.1',
@@ -212,33 +210,6 @@ def build_protobuf_c(source, build, prefix, sdk, options, environment):
         shutil.copy2(header, header_directory / header.name)
 
 
-def build_icu(source, build, prefix, sdk, options, environment):
-    """Build native ICU generators first, then cross-compile the target libraries."""
-    source = source / "source"
-    host_build = ROOT / "deps/ios/host/icu"
-    host_build.mkdir(parents=True, exist_ok=True)
-    host_env = dict(environment)
-    host_env.pop("IPHONEOS_DEPLOYMENT_TARGET", None)
-    host_env["SDKROOT"] = subprocess.check_output(
-        ["xcrun", "--sdk", "macosx", "--show-sdk-path"], env=host_env, universal_newlines=True).strip()
-    common = ["--enable-static", "--disable-shared", "--disable-tests", "--disable-samples",
-              "--disable-extras", "--disable-icuio", "--with-data-packaging=static"]
-    run([source / "configure", *common], host_build, host_env)
-    run(["make", "-j" + str(options.jobs)], host_build, host_env)
-    cross_env = dict(environment)
-    triple = "arm64-apple-ios" + options.deployment_target
-    if options.simulator:
-        triple += "-simulator"
-    cross_env["CFLAGS"] = "-O2 -target " + triple + " -isysroot " + shlex.quote(sdk)
-    cross_env["CXXFLAGS"] = cross_env["CFLAGS"]
-    run([source / "configure", *common, "--disable-tools", "--host=aarch64-apple-darwin",
-         "--with-cross-build=" + str(host_build), "--prefix=" + str(prefix)], build, cross_env)
-    run(["make", "-j" + str(options.jobs)], build, cross_env)
-    for name in ("libicuuc.a", "libicui18n.a", "libicudata.a"):
-        verify_archive(build / "lib" / name, options.simulator, environment)
-    run(["make", "install"], build, cross_env)
-
-
 PACKAGE_OUTPUTS = {
     "zlib": ("lib/libz.a", "include/zlib.h", "include/zconf.h"),
     "openssl": ("lib/libssl.a", "lib/libcrypto.a", "include/openssl/ssl.h"),
@@ -247,7 +218,6 @@ PACKAGE_OUTPUTS = {
     "libxml2": ("lib/libxml2.a", "include/libxml2/libxml/parser.h",
                 "include/libxml2/libxml/xmlversion.h"),
     "protobuf-c": ("lib/libprotobuf-c.a", "include/protobuf-c/protobuf-c.h"),
-    "icu": ("lib/libicuuc.a", "lib/libicui18n.a", "lib/libicudata.a", "include/unicode/utypes.h"),
 }
 
 
@@ -345,7 +315,7 @@ def main():
         source = source_package(name, environment)
         build.mkdir(parents=True, exist_ok=True)
         {"zlib": build_zlib, "openssl": build_openssl, "curl": build_curl,
-         "lzma": build_lzma, "libxml2": build_libxml2, "icu": build_icu,
+         "lzma": build_lzma, "libxml2": build_libxml2,
          "protobuf-c": build_protobuf_c}[name](source, build, prefix, sdk, options, environment)
         outputs = installed_output_hashes(name, prefix)
         if outputs is None:

@@ -50,7 +50,9 @@ cxx_bridge(
     hdrs = ["config/include/check_callback.h", "config/config_checkers.h"],
     deps = [":local_headers"],
 )
+cxx_bridge(name = "uuid_generator", src = "uuid-generator/src/bridge.rs")
 cxx_bridge(name = "logger", src = "logger/src/bridge.rs")
+cxx_bridge(name = "regex_engine", src = "regex-engine/src/bridge.rs")
 cxx_bridge(
     name = "in_process",
     src = "in-process/src/bridge.rs",
@@ -74,6 +76,8 @@ filegroup(
         "config.h",
         "config/config_checkers.h",
         "logger.h",
+        "regex_engine.h",
+        "uuid_generator.h",
         "in_process.h",
         "sql_nio.h",
     ],
@@ -97,7 +101,7 @@ cargo_library(
 
 cc_library(
     name = "bridges",
-    deps = [":local_bridge", ":config_bridge", ":logger_bridge", ":sql_nio_bridge"] + select({
+    deps = [":local_bridge", ":config_bridge", ":logger_bridge", ":regex_engine_bridge", ":sql_nio_bridge", ":uuid_generator_bridge"] + select({
         "@platforms//os:windows": [],
         "@platforms//os:emscripten": [],
         "//conditions:default": [":in_process_bridge"],

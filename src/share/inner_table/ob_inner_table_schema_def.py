@@ -2979,24 +2979,7 @@ def_table_schema(
   ('memstore_limit', 'int')
   ],  )
 
-def_table_schema(
-  owner = 'fengshuo.fs',
-  table_name     = '__all_virtual_concurrency_object_pool',
-  table_id       = '11019',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns     = [],
-  rowkey_columns = [
-  ],
-
-  normal_columns = [
-  ('free_list_name', 'varchar:OB_MAX_SYS_PARAM_VALUE_LENGTH'),
-  ('allocated', 'int'),
-  ('in_use', 'int'),
-  ('count', 'int'),
-  ('type_size', 'int'),
-  ('chunk_count', 'int'),
-  ('chunk_byte_size', 'int')
-  ],  )
+# 11019: __all_virtual_concurrency_object_pool # removed
 
 # 11020: __all_virtual_sesstat # removed
 
@@ -3145,26 +3128,7 @@ def_table_schema(**gen_iterate_core_inner_table_def(11035, '__all_virtual_core_a
 
 def_table_schema(**gen_iterate_core_inner_table_def(11036, '__all_virtual_core_column_table', 'VIRTUAL_TABLE', all_column_def))
 
-def_table_schema(
-  owner = 'nijia.nj',
-  table_name     = '__all_virtual_memory_info',
-  table_id       = '11037',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns     = [],
-  rowkey_columns = [
-  ('ctx_id', 'int'),
-  ('label', 'varchar:OB_MAX_CHAR_LENGTH')
-  ],
-
-  normal_columns = [
-  ('ctx_name', 'varchar:OB_MAX_CHAR_LENGTH'),
-  ('mod_type', 'varchar:OB_MAX_CHAR_LENGTH'),
-  ('mod_id', 'int'),
-  ('mod_name', 'varchar:OB_MAX_CHAR_LENGTH'),
-  ('hold', 'int'),
-  ('used', 'int'),
-  ('count', 'int')
-  ],  )
+# 11037: __all_virtual_memory_info removed (allocator-specific diagnostics)
 
 def_table_schema(
     owner = 'fyy280124',
@@ -3386,24 +3350,7 @@ def_table_schema(
 
 # 11076: __all_virtual_tenant_disk_stat # abandoned in 4.0
 
-def_table_schema(
-  owner = 'chaser.ch',
-  table_name     = '__all_virtual_io_stat',
-  table_id       = '11080',
-  table_type     = 'VIRTUAL_TABLE',
-  gm_columns     = [],
-  rowkey_columns = [
-      ],
-
-  normal_columns = [
-      ('fd', 'int', 'false'),
-      ('disk_type', 'varchar:OB_MAX_DISK_TYPE_LENGTH'),
-      ('sys_io_up_limit_in_mb', 'int'),
-      ('sys_io_bandwidth_in_mb', 'int'),
-      ('sys_io_low_watermark_in_mb', 'int'),
-      ('sys_io_high_watermark_in_mb', 'int'),
-      ('io_bench_result', 'varchar:OB_MAX_IO_BENCH_RESULT_LENGTH')
-  ],  )
+# 11080: __all_virtual_io_stat # removed (always-empty virtual table; ID reserved)
 
 
 def_table_schema(
@@ -3431,30 +3378,7 @@ def_table_schema(
   )
 
 
-def_table_schema(
-  owner = 'nijia.nj',
-  table_name     = '__all_virtual_server_object_pool',
-  table_id       = '11084',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns     = [],
-  rowkey_columns = [
-      ('object_type', 'varchar:OB_MAX_SYS_PARAM_VALUE_LENGTH'),
-      ('arena_id', 'int')
-  ],
-
-  normal_columns = [
-      ('lock', 'int'),
-      ('borrow_count', 'int'),
-      ('return_count', 'int'),
-      ('miss_count', 'int'),
-      ('miss_return_count', 'int'),
-      ('free_num', 'int'),
-      ('last_borrow_ts', 'int'),
-      ('last_return_ts', 'int'),
-      ('last_miss_ts', 'int'),
-      ('last_miss_return_ts', 'int'),
-      ('next', 'int')
-  ],  )
+# 11084: __all_virtual_server_object_pool # removed (always-empty virtual table; ID reserved)
 
 def_table_schema(
   owner = 'shanyan.g',
@@ -3525,26 +3449,7 @@ def_table_schema(
     ("schema_count", 'int')
                    ],  )
 
-def_table_schema(
-  owner = 'nijia.nj',
-  table_name     = '__all_virtual_memory_context_stat',
-  table_id       = '11094',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns = [],
-  rowkey_columns = [
-  ],
-
-  normal_columns = [
-    ('entity', 'varchar:128'),
-    ('p_entity', 'varchar:128'),
-    ('hold', 'bigint:20'),
-    ('malloc_hold', 'bigint:20'),
-    ('malloc_used', 'bigint:20'),
-    ('arena_hold', 'bigint:20'),
-    ('arena_used', 'bigint:20'),
-    ('create_time', 'timestamp'),
-    ('location', 'varchar:512')
-  ],  )
+# 11094: __all_virtual_memory_context_stat # removed (always-empty virtual table; ID reserved)
 
 def_table_schema(
   owner = 'nijia.nj',
@@ -4358,25 +4263,7 @@ def_table_schema(
 
 # 12120: __all_virtual_sequence_object_history # removed (single-tenant: iterate VT mechanism deleted)
 
-def_table_schema(
-    owner = 'yongle.xh',
-    table_name    = '__all_virtual_raid_stat',
-    table_id      = '12121',
-    table_type = 'VIRTUAL_TABLE',
-    gm_columns = [],
-    rowkey_columns = [
-    ],
-    normal_columns = [
-      ('disk_idx', 'int'),
-      ('install_seq', 'int'),
-      ('data_num', 'int'),
-      ('parity_num', 'int'),
-      ('create_ts', 'int'),
-      ('finish_ts', 'int'),
-      ('alias_name', 'varchar:MAX_PATH_SIZE'),
-      ('status', 'varchar:OB_STATUS_LENGTH'),
-      ('percent', 'int')
-  ],  )
+# 12121: __all_virtual_raid_stat # removed (always-empty virtual table; ID reserved)
 
 # 12122: __all_virtual_server_log_meta # abandoned in 4.0
 
@@ -4698,54 +4585,7 @@ def_table_schema(
 # 12195: __all_virtual_constraint_column_history # removed (single-tenant: iterate VT mechanism deleted)
 
 
-def_table_schema(
-  owner = 'xiaochu.yh',
-  table_name     = '__all_virtual_files',
-  table_id       = '12196',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns = [],
-  rowkey_columns = [],
-  normal_columns = [
-    ('FILE_ID','bigint:4','false','0'),
-    ('FILE_NAME','varchar:64','true','NULL'),
-    ('FILE_TYPE','varchar:20','false',''),
-    ('TABLESPACE_NAME','varchar:64','true','NULL'),
-    ('TABLE_CATALOG','varchar:64','false',''),
-    ('TABLE_SCHEMA','varchar:64','true','NULL'),
-    ('TABLE_NAME','varchar:64','true','NULL'),
-    ('LOGFILE_GROUP_NAME','varchar:64','true','NULL'),
-    ('LOGFILE_GROUP_NUMBER','bigint:4','true','NULL'),
-    ('ENGINE','varchar:64','false',''),
-    ('FULLTEXT_KEYS','varchar:64','true','NULL'),
-    ('DELETED_ROWS','bigint:4','true','NULL'),
-    ('UPDATE_COUNT','bigint:4','true','NULL'),
-    ('FREE_EXTENTS','bigint:4','true','NULL'),
-    ('TOTAL_EXTENTS','bigint:4','true','NULL'),
-    ('EXTENT_SIZE','bigint:4','false','0'),
-    ('INITIAL_SIZE','uint','true','NULL'),
-    ('MAXIMUM_SIZE','uint','true','NULL'),
-    ('AUTOEXTEND_SIZE','uint','true','NULL'),
-    ('CREATION_TIME','timestamp','true','NULL'),
-    ('LAST_UPDATE_TIME','timestamp','true','NULL'),
-    ('LAST_ACCESS_TIME','timestamp','true','NULL'),
-    ('RECOVER_TIME','bigint:4','true','NULL'),
-    ('TRANSACTION_COUNTER','bigint:4','true','NULL'),
-    ('VERSION','uint','true','NULL'),
-    ('ROW_FORMAT','varchar:10','true','NULL'),
-    ('TABLE_ROWS','uint','true','NULL'),
-    ('AVG_ROW_LENGTH','uint','true','NULL'),
-    ('DATA_LENGTH','uint','true','NULL'),
-    ('MAX_DATA_LENGTH','uint','true','NULL'),
-    ('INDEX_LENGTH','uint','true','NULL'),
-    ('DATA_FREE','uint','true','NULL'),
-    ('CREATE_TIME','timestamp','true','NULL'),
-    ('UPDATE_TIME','timestamp','true','NULL'),
-    ('CHECK_TIME','timestamp','true','NULL'),
-    ('CHECKSUM','uint','true','NULL'),
-    ('STATUS','varchar:20','false',''),
-    ('EXTRA','varchar:255','true','NULL')
-  ]
-  )
+# 12196: __all_virtual_files # removed (always-empty virtual table; ID reserved)
 
 # 12197: abandoned # INFORMATION_SCHEMA.FILES, which is moved to 21157
 
@@ -4795,22 +4635,7 @@ def_local_table(
 # 12210: __all_virtual_column_usage # removed (single-tenant: iterate VT mechanism deleted)
 
 
-def_table_schema(
-  owner = 'fengshuo.fs',
-  table_name     = '__all_virtual_ctx_memory_info',
-  table_id       = '12211',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns     = [],
-  rowkey_columns = [
-  ('ctx_id', 'int'),
-  ],
-
-  normal_columns = [
-  ('ctx_name', 'varchar:OB_MAX_CHAR_LENGTH'),
-  ('hold', 'int'),
-  ('used', 'int'),
-  ('limit', 'int')
-  ],  )
+# 12211: __all_virtual_ctx_memory_info removed (allocator-specific diagnostics)
 
 # 12212: __all_virtual_clog_agency_info # abandoned in 4.0
 
@@ -5590,23 +5415,7 @@ def_table_schema(
 
 # 12362: __all_virtual_core_table # removed (single-tenant: iterate VT mechanism deleted)
 
-def_table_schema(
-  owner = 'tushicheng.tsc',
-  table_name     = '__all_virtual_malloc_sample_info',
-  table_id       = '12363',
-  table_type = 'VIRTUAL_TABLE',
-  gm_columns     = [],
-  rowkey_columns = [],
-
-  normal_columns = [
-  ('ctx_id', 'int'),
-  ('mod_name', 'varchar:OB_MAX_CHAR_LENGTH'),
-  ('back_trace', 'varchar:DEFAULT_BUF_LENGTH'),
-  ('ctx_name', 'varchar:OB_MAX_CHAR_LENGTH'),
-  ('alloc_count', 'int'),
-  ('alloc_bytes', 'int')
-  ],
-  )
+# 12363: __all_virtual_malloc_sample_info removed (allocator-specific diagnostics)
 
 # 12364: legacy ls arb replica task table (abandoned)
 # 12365: legacy ls arb replica task history table (abandoned)
@@ -6240,7 +6049,6 @@ def_table_schema(
   rowkey_columns = [],
 
   normal_columns = [
-  ('raw_malloc_size', 'int'),
   ('index_metadata_size', 'int'),
   ('vector_mem_hold', 'int'),
   ('vector_mem_used', 'int'),
@@ -7356,31 +7164,9 @@ def_table_schema(
 
 # 21015: GV$LATCH # removed
 
-# 21016: GV$OB_MEMORY # removed (single-tenant GV/V collapse; folded into V$OB_MEMORY)
+# 21016: GV$OB_MEMORY removed with allocator-specific diagnostics
 
-def_table_schema(
-  owner = 'nijia.nj',
-  table_name      = 'V$OB_MEMORY',
-  table_id        = '21017',
-  table_type      = 'SYSTEM_VIEW',
-  rowkey_columns  = [],
-  normal_columns  = [],
-  gm_columns      = [],
-  view_definition = """
-SELECT
-     ctx_name AS CTX_NAME,
-     mod_name AS MOD_NAME,
-     sum(COUNT) AS COUNT,
-     sum(hold) AS HOLD,
-     sum(USED) AS USED
-FROM
-    oceanbase.__all_virtual_memory_info
-WHERE
-        mod_type='user'
-GROUP BY ctx_name, mod_name
-ORDER BY ctx_name, mod_name
-""".replace("\n", " ")
-)
+# 21017: V$OB_MEMORY removed with allocator-specific diagnostics
 
 # 21018: GV$OB_MEMSTORE # removed (single-tenant GV/V collapse; use oceanbase.__all_virtual_memstore_info)
 
@@ -8077,56 +7863,7 @@ def_table_schema(
   )
 #
 
-def_table_schema(
-  owner = 'xiaochu.yh',
-  database_id    = 'OB_INFORMATION_SCHEMA_ID',
-  table_name     = 'FILES',
-  table_id       = '21157',
-  table_type = 'SYSTEM_VIEW',
-  gm_columns = [],
-  rowkey_columns = [],
-  view_definition = """SELECT FILE_ID,
-                              FILE_NAME,
-                              FILE_TYPE,
-                              TABLESPACE_NAME,
-                              TABLE_CATALOG,
-                              TABLE_SCHEMA,
-                              TABLE_NAME,
-                              LOGFILE_GROUP_NAME,
-                              LOGFILE_GROUP_NUMBER,
-                              ENGINE,
-                              FULLTEXT_KEYS,
-                              DELETED_ROWS,
-                              UPDATE_COUNT,
-                              FREE_EXTENTS,
-                              TOTAL_EXTENTS,
-                              EXTENT_SIZE,
-                              INITIAL_SIZE,
-                              MAXIMUM_SIZE,
-                              AUTOEXTEND_SIZE,
-                              CREATION_TIME,
-                              LAST_UPDATE_TIME,
-                              LAST_ACCESS_TIME,
-                              RECOVER_TIME,
-                              TRANSACTION_COUNTER,
-                              VERSION,
-                              ROW_FORMAT,
-                              TABLE_ROWS,
-                              AVG_ROW_LENGTH,
-                              DATA_LENGTH,
-                              MAX_DATA_LENGTH,
-                              INDEX_LENGTH,
-                              DATA_FREE,
-                              CREATE_TIME,
-                              UPDATE_TIME,
-                              CHECK_TIME,
-                              CHECKSUM,
-                              STATUS,
-                              EXTRA
-                   FROM oceanbase.__all_virtual_files""".replace("\n", " "),
-  normal_columns = [
-  ]
-  )
+# 21157: INFORMATION_SCHEMA.FILES # removed (ID reserved)
 
 # 21158: DBA_OB_TENANTS (abandoned)
 # 21159: DBA_OB_UNITS (abandoned)
@@ -13731,8 +13468,8 @@ def_table_schema(
   gm_columns      = [],
   view_definition = """
 SELECT
-    (VECTOR_MEM_HOLD + RAW_MALLOC_SIZE + INDEX_METADATA_SIZE) as VECTOR_MEM_HOLD,
-    (VECTOR_MEM_USED + RAW_MALLOC_SIZE + INDEX_METADATA_SIZE) as VECTOR_MEM_USED,
+    (VECTOR_MEM_HOLD + INDEX_METADATA_SIZE) as VECTOR_MEM_HOLD,
+    (VECTOR_MEM_USED + INDEX_METADATA_SIZE) as VECTOR_MEM_USED,
     VECTOR_MEM_LIMIT
 FROM
     oceanbase.__all_virtual_vector_mem_info

@@ -610,7 +610,6 @@ SQL_UNITY_GROUPS = [
             "src/sql/engine/expr/ob_expr_greatest.cpp",
             "src/sql/engine/expr/ob_expr_hex.cpp",
             "src/sql/engine/expr/ob_expr_host_ip.cpp",
-            "src/sql/engine/expr/ob_expr_icu_version.cpp",
             "src/sql/engine/expr/ob_expr_ifnull.cpp",
             "src/sql/engine/expr/ob_expr_inet.cpp",
             "src/sql/engine/expr/ob_expr_inner_decode_like.cpp",

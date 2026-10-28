@@ -200,7 +200,7 @@
         "bzlTransitiveDigest": "grRzR3MqOylPNlcddE5beIC8HKzWu9eL8gHtSDAiIps=",
         "usagesDigest": "C88oWWRSwl985DWTNoqa3RJhrmyPEurpg8bTGjwBxHo=",
         "recordedInputs": [
-          "FILE:@@//bazel/sdk_sources/dependencies.json 9450c546a43710f663cb3eb09bebca6e6a2b6221d81e8d36e1d66218863b2d65"
+          "FILE:@@//bazel/sdk_sources/dependencies.json 223daa6025112ad5314805f7152ec4d790bf1ad6f8f5aec6084e2f3903a908f6"
         ],
         "generatedRepoSpecs": {
           "sdk_abseil": {
@@ -232,14 +232,6 @@
             "attributes": {
               "build_file": "@@//bazel/sdk_sources:roaring.BUILD",
               "package": "roaring",
-              "profile": ""
-            }
-          },
-          "sdk_icu": {
-            "repoRuleId": "@@//bazel/sdk_sources:repositories.bzl%_source",
-            "attributes": {
-              "build_file": "@@//bazel/sdk_sources:icu.BUILD",
-              "package": "icu",
               "profile": ""
             }
           },
