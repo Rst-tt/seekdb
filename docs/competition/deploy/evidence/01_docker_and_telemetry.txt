@@ -1,0 +1,21 @@
+# seekdb docker deployment evidence (2026-10-28T08:25:02+08:00)
+
+$ docker ps
+NAMES                    IMAGE                                          STATUS                    PORTS
+seekdb-docker            docker.m.daocloud.io/oceanbase/seekdb:latest   Up About a minute         0.0.0.0:2882->2881/tcp, [::]:2882->2881/tcp
+docker-api-1             langgenius/dify-api:1.9.2                      Up 18 minutes             0.0.0.0:5001->5001/tcp, [::]:5001->5001/tcp
+docker-sandbox-1         langgenius/dify-sandbox:0.2.12                 Up 18 minutes (healthy)   
+docker-plugin_daemon-1   langgenius/dify-plugin-daemon:0.3.3-local      Up 18 minutes             0.0.0.0:5003->5003/tcp, [::]:5003->5003/tcp
+docker-db-1              postgres:15-alpine                             Up 18 minutes (healthy)   5432/tcp
+docker-redis-1           redis:6-alpine                                 Up 18 minutes (healthy)   6379/tcp
+docker-weaviate-1        semitechnologies/weaviate:1.27.0               Up 18 minutes             
+docker-ssrf_proxy-1      ubuntu/squid:latest                            Up 18 minutes             3128/tcp
+
+$ docker images | grep seekdb
+docker.m.daocloud.io/oceanbase/seekdb:latest 4db4961869d5 819MB 2 weeks ago
+
+$ docker inspect digest
+sha256:4db4961869d554313520d6081fca29265ba6da6db7313311bd8acbed771a956b
+
+$ cat /var/lib/seekdb-docker/run/telemetry.json
+{"content": {"id": "c3ff6536-ead2-880b-a234-5df542cc57af", "host": {"os": "rocky", "cpu": "Intel(R) Core(TM) Ultra 9 275HX", "cpuCount": 24, "osVersion": "9.4", "memorySize": "15.3360825G"}, "event": "bootstraped", "version": "1.4.0.0", "instance": {"port": 2881, "hostHash": "12CA17B49AF2289436F303E0166030A21E525D266E209267433801A8FD4071A0", "createTimestamp": 1793146992399022}, "reporter": "docker-seekdb", "resource": {"cpuCount": 4, "logDiskSize": "0G", "memoryLimit": "12.268866G", "dataFileSize": "0.03125G"}, "telemetryVersion": 5}, "component": "seekdb"}

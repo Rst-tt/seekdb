@@ -1,0 +1,11 @@
+# 容器重启后 UUID/数据持久性验证 (2026-10-28T08:30:08+08:00)
+
+$ docker restart seekdb-docker   # 保留数据卷 /var/lib/seekdb-docker
+before: "id": "c3ff6536-ead2-880b-a234-5df542cc57af"
+after : "id": "c3ff6536-ead2-880b-a234-5df542cc57af"
+
+status=running restarts=0 restart_policy=unless-stopped
+
+$ mysql -h127.0.0.1 -P2882 -uroot -e 'select id, msg from comp_verify.t_hello'
+id	msg
+1	hello seekdb from xfz

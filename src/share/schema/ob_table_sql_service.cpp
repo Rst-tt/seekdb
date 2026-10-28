@@ -3181,7 +3181,7 @@ int ObTableSqlService::gen_column_dml_without_check(
       }
     }
     ObString local_session_var;
-    if (OB_SUCC(ret) && column.is_generated_column()
+    if (OB_SUCC(ret) && (column.is_generated_column() || column.is_ai_column())
         && OB_FAIL(column.get_local_session_var().gen_local_session_var_str(allocator, local_session_var))) {
     }
     if (OB_SUCC(ret) && (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(

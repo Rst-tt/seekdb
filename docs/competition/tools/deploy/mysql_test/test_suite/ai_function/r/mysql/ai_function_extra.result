@@ -1,0 +1,98 @@
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_empty');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_empty_ep');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'x_empty', '{"type":"completion","model_name":"mock"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT(
+'x_empty_ep', '{"ai_model_name":"x_empty","scope":"all","url":"http://0.0.0.0:8000/v1/chat/completions/empty","access_key":"mock-key","provider":"openai"}');
+select ai_complete('x_empty','hello');
+ERROR HY000: unexpected http message: {"id": "cmpl-empty", "model": "mock", "object": "chat.completion", "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}]}
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_bad');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_bad_ep');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'x_bad', '{"type":"completion","model_name":"mock"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT(
+'x_bad_ep', '{"ai_model_name":"x_bad","scope":"all","url":"http://0.0.0.0:8000/v1/chat/completions/badjson","access_key":"mock-key","provider":"openai"}');
+select ai_complete('x_bad','hello');
+ERROR 22032: Invalid JSON text.
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_wd');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_wd_ep');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'x_wd', '{"type":"dense_embedding","model_name":"mock-embed"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT(
+'x_wd_ep', '{"ai_model_name":"x_wd","scope":"all","url":"http://0.0.0.0:8000/v1/embeddings/wrongdim","access_key":"mock-key","provider":"openai"}');
+select ai_embed('x_wd','x',512);
+ERROR HY000: Incorrect arguments to ai_embed, result dimension is not equal to dimension
+select json_length(ai_embed('x_wd','x',16)) as ok_dimension;
+ok_dimension
+16
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_dup');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_dup_ep');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'x_dup', '{"type":"dense_embedding","model_name":"mock-embed"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT(
+'x_dup_ep', '{"ai_model_name":"x_dup","scope":"all","url":"http://0.0.0.0:8000/v1/embeddings/dupidx","access_key":"mock-key","provider":"openai"}');
+select ai_embed('x_dup','x');
+ERROR HY000: unexpected http message: {"data": [{"index": 0, "object": "embedding", "embedding": [0.013, 0.05, 0.087, 0.124]}, {"index": 0, "object": "embedding", "embedding": [0.026, 0.063, 0.1, 0.137]}], "model": "mock-embed", "object": "list"}
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_rr');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_rr_ep');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'x_rr', '{"type":"rerank","model_name":"BAAI/bge-reranker-v2-m3"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT(
+'x_rr_ep', '{"ai_model_name":"x_rr","scope":"all","url":"http://0.0.0.0:8000/v1/rerank","access_key":"mock-key","provider":"siliconflow"}');
+select json_length(ai_rerank('x_rr','apple', json_array('apple','doc02','doc03','doc04','doc05','doc06','doc07','doc08','doc09','doc10','doc11','doc12','doc13','doc14','doc15','doc16','doc17','doc18','doc19','doc20','doc21','doc22','doc23','doc24','doc25'))) as n25;
+n25
+25
+select json_unquote(json_extract(ai_rerank('x_rr','apple', json_array('apple','doc02','doc03','doc04','doc05','doc06','doc07','doc08','doc09','doc10','doc11','doc12','doc13','doc14','doc15','doc16','doc17','doc18','doc19','doc20','doc21','doc22','doc23','doc24','doc25')), '$[0].document')) as first_doc;
+first_doc
+apple
+select json_extract(ai_rerank('x_rr','apple', json_array('apple','doc02','doc03','doc04','doc05','doc06','doc07','doc08','doc09','doc10','doc11','doc12','doc13','doc14','doc15','doc16','doc17','doc18','doc19','doc20','doc21','doc22','doc23','doc24','doc25')), '$[24].index') as last_index;
+last_index
+24
+drop table if exists t_extra_obj;
+create table t_extra_obj (id varchar(8), txt varchar(16));
+insert into t_extra_obj values('d01','apple'),('d02','doc02'),('d03','doc03'),('d04','doc04'),('d05','doc05'),('d06','doc06'),('d07','doc07'),('d08','doc08'),('d09','doc09'),('d10','doc10'),('d11','doc11'),('d12','doc12'),('d13','doc13'),('d14','doc14'),('d15','doc15'),('d16','doc16'),('d17','doc17'),('d18','doc18'),('d19','doc19'),('d20','doc20'),('d21','doc21'),('d22','doc22'),('d23','doc23'),('d24','doc24'),('d25','doc25');
+select json_unquote(json_extract(ai_rerank('x_rr','apple',
+(select json_arrayagg(json_object('id', id, 'text', txt)) from t_extra_obj), 'text'), '$[0].id')) as first_id,
+json_length(ai_rerank('x_rr','apple',
+(select json_arrayagg(json_object('id', id, 'text', txt)) from t_extra_obj), 'text')) as n25_obj;
+first_id	n25_obj
+d01	25
+select json_unquote(json_extract(ai_rerank('x_rr','apple',
+(select json_arrayagg(json_object('id', id, 'text', txt)) from t_extra_obj), 'text'), '$[24].id')) as last_id;
+last_id
+d25
+drop table if exists t_extra_batch;
+create table t_extra_batch (id int primary key, doc varchar(16));
+insert into t_extra_batch values (1,'val1'),(2,'val2'),(3,'val3'),(4,'val4'),(5,'val5'),(6,'val6'),(7,'val7'),(8,'val8'),(9,'val9'),(10,'val10'),(11,null),(12,'val12'),(13,null),(14,'val14');
+insert into t_extra_batch select id + 14, doc from t_extra_batch where id <= 14;
+insert into t_extra_batch select id + 28, doc from t_extra_batch where id <= 28;
+call DBMS_AI_SERVICE.DROP_AI_MODEL('enhance_embed');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('enhance_embed_ep');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'enhance_embed', '{"type":"dense_embedding","model_name":"text-embedding-v1"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT(
+'enhance_embed_ep', '{"ai_model_name":"enhance_embed","scope":"all","url":"http://0.0.0.0:8000/compatible-mode/v1/embeddings","access_key":"mock-key","provider":"openai"}');
+select count(*) as total, count(ai_embed('enhance_embed', doc)) as non_null from t_extra_batch;
+total	non_null
+56	48
+select id, json_length(ai_embed('enhance_embed', doc)) as d from t_extra_batch where id in (10,11,12,13,14) order by id;
+id	d
+10	768
+11	NULL
+12	768
+13	NULL
+14	768
+drop table if exists t_extra_batch;
+drop table if exists t_extra_obj;
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_empty');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_empty_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_bad');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_bad_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_wd');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_wd_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_dup');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_dup_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('x_rr');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('x_rr_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('enhance_embed');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('enhance_embed_ep');

@@ -28,6 +28,7 @@
 #include "sql/resolver/cmd/ob_variable_set_stmt.h"
 #include "sql/resolver/cmd/ob_call_procedure_stmt.h"
 #include "sql/resolver/cmd/ob_anonymous_block_stmt.h"
+#include "sql/resolver/ddl/ob_explain_stmt.h"
 #include "sql/privilege_check/ob_privilege_check.h"
 #include "sql/rewrite/ob_transformer_impl.h"
 #include "sql/rewrite/ob_transform_pre_process.h"
@@ -270,19 +271,43 @@ int ObSql::fill_result_set(ObResultSet &result_set,
       break;
     }
     case stmt::T_EXPLAIN: {
-      ObString tname = ObString::make_string("explain_table");
-      ObString cname = ObString::make_string("Query Plan");
-      field.tname_ = tname;
-      field.org_tname_ = tname;
-      field.cname_ = cname;
-      field.org_cname_ = cname;
-      field.type_.set_type(ObVarcharType);
-      field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
-      field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
-      field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
-      field.type_.set_varchar(type_name);
-      if (OB_FAIL(result_set.reserve_field_columns(1))) {
-      } else if (OB_FAIL(result_set.add_field_column(field))) {
+      if (static_cast<ObExplainStmt&>(basic_stmt).is_describe()) {
+        static const char *const describe_field_names[] = {
+            "column_name", "column_type", "null", "key", "default", "extra"};
+        const int64_t describe_field_cnt = static_cast<int64_t>(ARRAYSIZEOF(describe_field_names));
+        if (OB_FAIL(result_set.reserve_field_columns(describe_field_cnt))) {
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < describe_field_cnt; ++i) {
+          ObField desc_field;
+          ObString desc_tname = ObString::make_string("describe_table");
+          ObString desc_cname = ObString::make_string(describe_field_names[i]);
+          desc_field.tname_ = desc_tname;
+          desc_field.org_tname_ = desc_tname;
+          desc_field.cname_ = desc_cname;
+          desc_field.org_cname_ = desc_cname;
+          desc_field.type_.set_type(ObVarcharType);
+          desc_field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
+          desc_field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+          desc_field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
+          desc_field.type_.set_varchar(type_name);
+          if (OB_FAIL(result_set.add_field_column(desc_field))) {
+          }
+        }
+      } else {
+        ObString tname = ObString::make_string("explain_table");
+        ObString cname = ObString::make_string("Query Plan");
+        field.tname_ = tname;
+        field.org_tname_ = tname;
+        field.cname_ = cname;
+        field.org_cname_ = cname;
+        field.type_.set_type(ObVarcharType);
+        field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
+        field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+        field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
+        field.type_.set_varchar(type_name);
+        if (OB_FAIL(result_set.reserve_field_columns(1))) {
+        } else if (OB_FAIL(result_set.add_field_column(field))) {
+        }
       }
       break;
     }

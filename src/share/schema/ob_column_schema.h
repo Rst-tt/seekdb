@@ -241,6 +241,31 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline bool is_default_expr_v2_column() const { return column_flags_ & DEFAULT_EXPR_V2_COLUMN_FLAG; }
   inline bool is_generated_column() const { return (is_virtual_generated_column() || is_stored_generated_column()); }
   inline bool is_generated_column_using_udf() const { return /*is_generated_column() && global index table clean the virtual gen col flag*/ !!(column_flags_ & GENERATED_COLUMN_UDF_EXPR); }
+  inline bool is_ai_column() const { return column_flags_ & AI_COLUMN_FLAG; }
+  inline void set_ai_column_flag() { add_column_flag(AI_COLUMN_FLAG); }
+  inline void erase_ai_column_flag() { del_column_flag(AI_COLUMN_FLAG); }
+  int set_ai_column_expr(const common::ObString &expr);
+  common::ObString get_ai_column_expr() const;
+  int set_ai_column_max_retries(int64_t max_retries);
+  int64_t get_ai_column_max_retries() const;
+  int set_ai_column_status_column_id(uint64_t column_id);
+  uint64_t get_ai_column_status_column_id() const;
+  int set_ai_column_dep_names(const common::ObString &dep_names);
+  common::ObString get_ai_column_dep_names() const;
+  int set_ai_column_gen_column_id(uint64_t column_id);
+  uint64_t get_ai_column_gen_column_id() const;
+  int set_ai_column_embed_model(const common::ObString &model);
+  common::ObString get_ai_column_embed_model() const;
+  int set_ai_column_embed_input(const common::ObString &input);
+  common::ObString get_ai_column_embed_input() const;
+  int set_ai_column_embed_dimension(int64_t dimension);
+  int64_t get_ai_column_embed_dimension() const;
+  int set_ai_column_complete_model(const common::ObString &model);
+  common::ObString get_ai_column_complete_model() const;
+  int set_ai_column_complete_prompt(const common::ObString &prompt);
+  common::ObString get_ai_column_complete_prompt() const;
+  int set_ai_column_complete_config(const common::ObString &config);
+  common::ObString get_ai_column_complete_config() const;
   // to check whether storing column in index table is specified by user.
   inline bool is_user_specified_storing_column() const { return column_flags_ & USER_SPECIFIED_STORING_COLUMN_FLAG; }
   inline bool is_default_srid() const { return UINT32_MAX == srs_info_.srid_; }
@@ -350,6 +375,8 @@ int assign(const ObColumnSchemaV2 &src_schema);
   DECLARE_VIRTUAL_TO_STRING;
 private:
   int alloc_column_ref_set();
+  int get_ai_meta_str(common::ObString &meta) const;
+  int set_ai_meta_field(int64_t field_idx, const common::ObString &value);
 private:
   uint64_t table_id_;
   uint64_t column_id_;

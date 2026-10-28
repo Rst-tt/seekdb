@@ -82,7 +82,9 @@ protected:
   int check_need_assignment(const common::ObIArray<ObAssignment> &assigns,
                             uint64_t table_id,
                             bool before_update_row_trigger_exist,
+                            const share::schema::ObTableSchema &table_schema,
                             const share::schema::ObColumnSchemaV2 &column,
+                            const ObStmtScope scope,
                             bool &need_assign);
 
   int set_base_table_for_updatable_view(TableItem &table_item,

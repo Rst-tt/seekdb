@@ -1,0 +1,15 @@
+$ mysql -h127.0.0.1 -P2882 -uroot -e 'select version(), @@port, now()'
+version()	@@port	now()
+5.7.25-OceanBase seekdb-v1.4.0.0	2881	2026-10-28 08:25:03
+
+$ mysql ... -e 'show databases'
+Database
+comp_verify
+information_schema
+mysql
+oceanbase
+test
+
+$ mysql ... comp_verify
+id	msg	ts
+1	hello seekdb from xfz	2026-10-28 08:23:52

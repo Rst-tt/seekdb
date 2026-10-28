@@ -43,6 +43,7 @@
 #include "sql/resolver/ddl/ob_drop_database_resolver.h"
 #include "sql/resolver/ddl/ob_create_view_resolver.h"
 #include "sql/resolver/ddl/ob_explain_resolver.h"
+#include "sql/resolver/dml/ob_copy_resolver.h"
 #include "sql/resolver/ddl/ob_create_outline_resolver.h"
 #include "sql/resolver/ddl/ob_alter_outline_resolver.h"
 #include "sql/resolver/ddl/ob_drop_outline_resolver.h"
@@ -238,6 +239,10 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
         REGISTER_SELECT_STMT_RESOLVER(Select);
         break;
       }
+      case T_COPY: {
+        REGISTER_STMT_RESOLVER(Copy);
+        break;
+      }
       case T_INSERT: {
         REGISTER_STMT_RESOLVER(Insert);
         break;
@@ -402,6 +407,7 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       case T_SHOW_DATABASES:
       case T_SHOW_VARIABLES:
       case T_SHOW_COLUMNS:
+      case T_SHOW_AI_COLUMNS:
       case T_SHOW_SCHEMA:
       case T_SHOW_CREATE_DATABASE:
       case T_SHOW_CREATE_TABLE:

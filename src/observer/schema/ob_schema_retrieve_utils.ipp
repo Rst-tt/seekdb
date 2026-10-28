@@ -1056,7 +1056,7 @@ int ObSchemaRetrieveUtils::fill_column_schema(const bool check_deleted, T &resul
       } else {}
     }
 
-    if (OB_SUCC(ret) && column.is_generated_column()) {
+    if (OB_SUCC(ret) && (column.is_generated_column() || column.is_ai_column())) {
       bool skip_null_error = true;
       bool skip_column_error = true;
       ObString local_session_var;

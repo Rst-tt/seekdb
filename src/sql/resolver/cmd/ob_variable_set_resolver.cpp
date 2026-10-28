@@ -130,6 +130,27 @@ int ObVariableSetResolver::resolve(const ParseNode &parse_tree)
               ObCharset::casedn(CS_TYPE_UTF8MB4_GENERAL_CI, var_node.variable_name_);
             }
           }
+          if (OB_SUCC(ret)
+              && 0 == var_node.variable_name_.case_compare("ai_column_strict_read")) {
+            ParseNode *value_node = set_node->children_[1];
+            bool strict_read = false;
+            if (OB_ISNULL(value_node)) {
+              ret = OB_INVALID_ARGUMENT;
+            } else if (T_INT == value_node->type_) {
+              strict_read = (0 != value_node->value_);
+            } else if (value_node->str_len_ > 0 && OB_NOT_NULL(value_node->str_value_)) {
+              ObString value_str(value_node->str_len_, value_node->str_value_);
+              strict_read = 0 != value_str.case_compare("off")
+                            && 0 != value_str.case_compare("false")
+                            && 0 != value_str.case_compare("0");
+            } else {
+              ret = OB_INVALID_ARGUMENT;
+            }
+            if (OB_SUCC(ret)) {
+              session_info_->set_ai_column_strict_read(strict_read);
+              continue;
+            }
+          }
           if (OB_FAIL(ret)) {
           } else if (OB_ISNULL(set_node->children_[1])) {
             ret = OB_INVALID_ARGUMENT;

@@ -1544,6 +1544,11 @@ int check_will_be_having_domain_index_operation(
                                      share::schema::AlterColumnSchema &alter_column_schema,
                                      ObDDLOperator *ddl_operator,
                                      common::ObMySQLTransaction *trans);
+  int add_ai_column_hidden_columns_(share::schema::ObTableSchema &new_table_schema,
+                                    share::schema::AlterColumnSchema &ai_column,
+                                    ObDDLOperator *ddl_operator,
+                                    common::ObMySQLTransaction *trans,
+                                    bool update_inner_table);
   int build_need_flush_role_array(share::schema::ObSchemaGetterGuard &schema_guard,
                                   const share::schema::ObUserInfo *user_info,
                                   const obcall::ObAlterUserRoleArg &arg,

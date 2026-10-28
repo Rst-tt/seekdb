@@ -17,6 +17,7 @@
 #ifndef OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
 #define OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
 #include "sql/resolver/dml/ob_dml_stmt.h"
+#include "sql/resolver/dml/ob_file_sql_utils.h"
 #include "sql/resolver/dml/ob_column_namespace_checker.h"
 #include "sql/resolver/ob_stmt_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_resolver_impl.h"
@@ -365,6 +366,8 @@ protected:
                                 bool include_hidden,
                                 ColumnItem *&col_item,
                                 ObDMLStmt *stmt = NULL);
+  int check_ai_column_strict_read(const share::schema::ObTableSchema &table_schema,
+                                  const share::schema::ObColumnSchemaV2 &ai_column);
   int adjust_values_desc_position(ObInsertTableInfo& table_info,
                                   ObIArray<int64_t> &value_idxs);
 public:
@@ -778,6 +781,16 @@ private:
   bool check_expr_has_colref(ObRawExpr *expr);
 
   int resolve_values_table_item(const ParseNode &table_node, TableItem *&table_item);
+  // file table (file as database) support
+  int resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item);
+  int build_file_sql_value_expr(const ObFileSqlType file_type,
+                                const ObFileSqlCell &cell,
+                                ObRawExpr *&expr);
+  int build_file_table_values(const ObFileTableDef &file_def,
+                              const common::ObIArray<ObFileSqlCell> &cells,
+                              ObValuesTableDef &table_values);
+  int generate_file_table_column_items(const ObValuesTableDef &table_values,
+                                       TableItem &table_item);
   int resolve_values_table_for_select(const ParseNode &table_node,
                                       ObValuesTableDef &table_values);
   int resolve_values_table_for_insert(const ParseNode &table_node,

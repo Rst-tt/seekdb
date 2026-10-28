@@ -129,6 +129,7 @@ ObSQLSessionInfo::ObSQLSessionInfo() :
       read_uncommited_(false),
       trace_recorder_(NULL),
       inner_flag_(false),
+      ai_column_strict_read_(false),
       is_max_availability_mode_(false),
       next_client_ps_stmt_id_(0),
       session_type_(INVALID_TYPE),
@@ -267,6 +268,7 @@ void ObSQLSessionInfo::reset(bool skip_sys_var)
     read_uncommited_ = false;
     trace_recorder_ = NULL;
     inner_flag_ = false;
+    ai_column_strict_read_ = false;
     is_max_availability_mode_ = false;
     ps_session_info_map_.reuse();
     ps_name_id_map_.reuse();

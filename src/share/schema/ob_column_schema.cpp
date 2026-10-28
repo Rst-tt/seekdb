@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SHARE_SCHEMA
 #include "ob_column_schema.h"
 #include "share/schema/ob_schema_service.h"
+#include "lib/string/ob_string_buffer.h"
 
 namespace oceanbase
 {
@@ -516,6 +517,303 @@ int ObColumnSchemaV2::set_extended_type_info(const ObIArray<common::ObString> &i
 int ObColumnSchemaV2::add_type_info(const ObString &type_info)
 {
   return add_string_to_array(type_info, extended_type_info_);
+}
+
+namespace
+{
+constexpr int64_t AI_COLUMN_META_FIELD_CNT = 11;
+constexpr char AI_COLUMN_META_SEP = '\x1f';
+constexpr ObSysVarClassType AI_COLUMN_META_VAR_TYPE = SYS_VAR_SQL_MODE;
+
+void get_ai_meta_field(const ObString &meta, int64_t field_idx, ObString &field)
+{
+  field.reset();
+  int64_t cur_field = 0;
+  int64_t start = 0;
+  while (cur_field <= field_idx && start <= meta.length()) {
+    int64_t end = start;
+    while (end < meta.length() && meta[end] != AI_COLUMN_META_SEP) {
+      ++end;
+    }
+    if (cur_field == field_idx) {
+      if (end > start) {
+        field.assign_ptr(meta.ptr() + start, static_cast<int32_t>(end - start));
+      }
+      break;
+    }
+    if (end >= meta.length()) {
+      break;
+    }
+    start = end + 1;
+    ++cur_field;
+  }
+}
+} // namespace
+
+int ObColumnSchemaV2::get_ai_meta_str(ObString &meta) const
+{
+  int ret = OB_SUCCESS;
+  ObSessionSysVar *var = NULL;
+  meta.reset();
+  if (is_ai_column() && OB_FAIL(local_session_vars_.get_local_var(AI_COLUMN_META_VAR_TYPE, var))) {
+  } else if (OB_NOT_NULL(var)) {
+    if (var->val_.is_varchar()) {
+      meta = var->val_.get_string();
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+    }
+  }
+  return ret;
+}
+
+int ObColumnSchemaV2::set_ai_meta_field(int64_t field_idx, const ObString &value)
+{
+  int ret = OB_SUCCESS;
+  ObString meta;
+  ObString fields[AI_COLUMN_META_FIELD_CNT];
+  ObIAllocator *alloc = get_allocator();
+  if (field_idx < 0 || field_idx >= AI_COLUMN_META_FIELD_CNT) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_ISNULL(alloc)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ai column meta allocator is null", K(ret), K(field_idx));
+  } else if (OB_FAIL(get_ai_meta_str(meta))) {
+  } else {
+    for (int64_t i = 0; i < AI_COLUMN_META_FIELD_CNT; ++i) {
+      get_ai_meta_field(meta, i, fields[i]);
+    }
+    fields[field_idx] = value;
+    ObStringBuffer buf(alloc);
+    for (int64_t i = 0; OB_SUCC(ret) && i < AI_COLUMN_META_FIELD_CNT; ++i) {
+      if (i > 0 && OB_FAIL(buf.append(&AI_COLUMN_META_SEP, 1))) {
+      } else if (OB_FAIL(buf.append(fields[i].ptr(), fields[i].length()))) {
+      }
+    }
+    ObString new_meta;
+    if (OB_SUCC(ret) && OB_FAIL(buf.get_result_string(new_meta))) {
+    } else if (OB_SUCC(ret)) {
+      local_session_vars_.reset();
+      local_session_vars_.set_allocator(alloc);
+      if (OB_FAIL(local_session_vars_.set_local_var_capacity(1))) {
+      }
+      ObObj value_obj;
+      value_obj.set_varchar(new_meta);
+      value_obj.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      value_obj.set_collation_level(CS_LEVEL_IMPLICIT);
+      if (OB_SUCC(ret)
+          && OB_FAIL(local_session_vars_.add_local_var(AI_COLUMN_META_VAR_TYPE, value_obj))) {
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+    LOG_WARN("set ai column meta field failed", K(ret), K(field_idx), K(alloc));
+  }
+  return ret;
+}
+
+int ObColumnSchemaV2::set_ai_column_expr(const ObString &expr)
+{
+  return set_ai_meta_field(0, expr);
+}
+
+ObString ObColumnSchemaV2::get_ai_column_expr() const
+{
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 0, field);
+  }
+  return field;
+}
+
+int ObColumnSchemaV2::set_ai_column_max_retries(int64_t max_retries)
+{
+  int ret = OB_SUCCESS;
+  char buf[24] = {0};
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buf, sizeof(buf), pos, "%ld", max_retries))) {
+  } else if (OB_FAIL(set_ai_meta_field(1, ObString(pos, buf)))) {
+  }
+  return ret;
+}
+
+int64_t ObColumnSchemaV2::get_ai_column_max_retries() const
+{
+  int64_t ret = 0;
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 1, field);
+    if (!field.empty()) {
+      ret = strtoll(field.ptr(), nullptr, 10);
+    }
+  }
+  return ret;
+}
+
+int ObColumnSchemaV2::set_ai_column_status_column_id(uint64_t column_id)
+{
+  int ret = OB_SUCCESS;
+  char buf[24] = {0};
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buf, sizeof(buf), pos, "%lu", column_id))) {
+  } else if (OB_FAIL(set_ai_meta_field(2, ObString(pos, buf)))) {
+  }
+  return ret;
+}
+
+uint64_t ObColumnSchemaV2::get_ai_column_status_column_id() const
+{
+  uint64_t ret = OB_INVALID_ID;
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 2, field);
+    if (!field.empty()) {
+      ret = strtoull(field.ptr(), nullptr, 10);
+    }
+  }
+  return ret;
+}
+
+int ObColumnSchemaV2::set_ai_column_dep_names(const ObString &dep_names)
+{
+  return set_ai_meta_field(3, dep_names);
+}
+
+ObString ObColumnSchemaV2::get_ai_column_dep_names() const
+{
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 3, field);
+  }
+  return field;
+}
+
+int ObColumnSchemaV2::set_ai_column_gen_column_id(uint64_t column_id)
+{
+  int ret = OB_SUCCESS;
+  char buf[24] = {0};
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buf, sizeof(buf), pos, "%lu", column_id))) {
+  } else if (OB_FAIL(set_ai_meta_field(4, ObString(pos, buf)))) {
+  }
+  return ret;
+}
+
+uint64_t ObColumnSchemaV2::get_ai_column_gen_column_id() const
+{
+  uint64_t ret = OB_INVALID_ID;
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 4, field);
+    if (!field.empty()) {
+      ret = strtoull(field.ptr(), nullptr, 10);
+    }
+  }
+  return ret;
+}
+
+int ObColumnSchemaV2::set_ai_column_embed_model(const ObString &model)
+{
+  return set_ai_meta_field(5, model);
+}
+
+ObString ObColumnSchemaV2::get_ai_column_embed_model() const
+{
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 5, field);
+  }
+  return field;
+}
+
+int ObColumnSchemaV2::set_ai_column_embed_input(const ObString &input)
+{
+  return set_ai_meta_field(6, input);
+}
+
+ObString ObColumnSchemaV2::get_ai_column_embed_input() const
+{
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 6, field);
+  }
+  return field;
+}
+
+int ObColumnSchemaV2::set_ai_column_embed_dimension(int64_t dimension)
+{
+  int ret = OB_SUCCESS;
+  char buf[24] = {0};
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buf, sizeof(buf), pos, "%ld", dimension))) {
+  } else if (OB_FAIL(set_ai_meta_field(7, ObString(pos, buf)))) {
+  }
+  return ret;
+}
+
+int64_t ObColumnSchemaV2::get_ai_column_embed_dimension() const
+{
+  int64_t ret = 0;
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 7, field);
+    if (!field.empty()) {
+      ret = strtoll(field.ptr(), nullptr, 10);
+    }
+  }
+  return ret;
+}
+
+int ObColumnSchemaV2::set_ai_column_complete_model(const ObString &model)
+{
+  return set_ai_meta_field(8, model);
+}
+
+ObString ObColumnSchemaV2::get_ai_column_complete_model() const
+{
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 8, field);
+  }
+  return field;
+}
+
+int ObColumnSchemaV2::set_ai_column_complete_prompt(const ObString &prompt)
+{
+  return set_ai_meta_field(9, prompt);
+}
+
+ObString ObColumnSchemaV2::get_ai_column_complete_prompt() const
+{
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 9, field);
+  }
+  return field;
+}
+
+int ObColumnSchemaV2::set_ai_column_complete_config(const ObString &config)
+{
+  return set_ai_meta_field(10, config);
+}
+
+ObString ObColumnSchemaV2::get_ai_column_complete_config() const
+{
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 10, field);
+  }
+  return field;
 }
 
 int ObColumnSchemaV2::convert_column_id(const hash::ObHashMap<uint64_t, uint64_t> &column_id_map)
