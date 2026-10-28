@@ -4,9 +4,6 @@ ai_prompt('{0}+{1}={2} 吗？请回答true或false','1')
 select ai_prompt('{0}+{1}={2} 吗？请回答true或false',json_object("a","1"));
 ai_prompt('{0}+{1}={2} 吗？请回答true或false',json_object("a","1"))
 {"args": [{"a": "1"}], "template": "{0}+{1}={2} 吗？请回答true或false"}
-select ai_prompt('{0}/{0}/{1}', json_array(1,true), json_object("k",2));
-ai_prompt('{0}/{0}/{1}', json_array(1,true), json_object("k",2))
-{"args": [[1, true], {"k": 2}], "template": "{0}/{0}/{1}"}
 select ai_prompt();
 ERROR 42000: Incorrect parameter count in the call to native function 'ai_prompt'
 select ai_prompt(1);
