@@ -275,17 +275,20 @@ static void sk_set_dset(DLManagedTensor* d, void* data, int bits, int dev,
  *
  * The stock bridge pins NN_DESCENT / graph_degree 128 / intermediate 256 /
  * niter 100 for every dataset, which is far more work than the graph needs.
- * Measured on 250K x 128 and 250K x 256 (see CONTEST_REPORT.md): narrow vectors
- * tolerate an aggressive intermediate-degree cut with essentially unchanged
- * recall, while wider vectors lose more than the allowed 0.005 for the same
- * change, so only the iteration count is reduced there.
+ * Measured on 250K points (see CONTEST_REPORT.md):
+ *   dim 128: 128/192/35 builds 2.49x faster with recall@10 0.9980 and
+ *            recall@100 0.9855 against stock 1.0000 / 0.9887, i.e. the drop
+ *            stays inside the 0.005 gate even on the hardest proxy data.
+ *   dim 256: every cut we measured (niter 30/50/70, intermediate 192/224)
+ *            loses 0.010-0.045 recall@10, so wide vectors keep the stock
+ *            parameters and only benefit from the bridge's other changes.
  */
 static void sk_tune_defaults(long dim, int* deg, int* inter, int* niter)
 {
   if (dim <= 160) {
     *deg = 128;
     *inter = 192;
-    *niter = 30;
+    *niter = 35;
   } else {
     *deg = 128;
     *inter = 256;
@@ -297,10 +300,20 @@ static void sk_apply_params(cuvsCagraIndexParams_t ip, const sk_cuvs_index* h)
 {
   int deg = 0, inter = 0, niter = 0;
   sk_tune_defaults(h->dim, &deg, &inter, &niter);
-  ip->build_algo = NN_DESCENT;
   ip->graph_degree = sk_conf_int("SEEKDB_CUVS_GRAPH_DEGREE", "graph_degree", deg);
   ip->intermediate_graph_degree = sk_conf_int("SEEKDB_CUVS_INTERMEDIATE_DEGREE", "intermediate_degree", inter);
   ip->nn_descent_niter = sk_conf_int("SEEKDB_CUVS_NITER", "niter", niter);
+  /* Build algorithm: default NN_DESCENT (stock behaviour).  Overridable so the
+   * IVF_PQ route (usually a much cheaper graph initialisation) can be measured
+   * on a real GPU without recompiling.  The numeric value is forwarded as-is;
+   * cuVS rejects unknown values at build time. */
+  ip->build_algo = (enum cuvsCagraGraphBuildAlgo)sk_conf_int("SEEKDB_CUVS_BUILD_ALGO", "build_algo", (int)NN_DESCENT);
+  if (sk_conf_int("SEEKDB_CUVS_TIME", "time", 0) == 1) {
+    fprintf(stderr, "[seekdb_cuvs] params build_algo=%d graph_degree=%lu intermediate=%lu niter=%lu\n",
+            (int)ip->build_algo, (unsigned long)ip->graph_degree,
+            (unsigned long)ip->intermediate_graph_degree,
+            (unsigned long)ip->nn_descent_niter);
+  }
 }
 
 /* One dataset upload + one CAGRA build; leaves h->idx/h->ip NULL on failure. */
