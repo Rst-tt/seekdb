@@ -26,6 +26,7 @@ namespace storage
 ObSRMergeCmp::ObSRMergeCmp()
   : cmp_func_(nullptr),
     iter_ids_(nullptr),
+    use_fast_cmp_(false),
     is_inited_(false)
 {
 }
@@ -41,6 +42,7 @@ int ObSRMergeCmp::init(
     iter_ids_ = iter_ids;
     common::ObDatumBasicFuncs *basic_funcs = ObDatumFuncs::get_basic_func(id_meta.type_, id_meta.cs_type_);
     cmp_func_ = basic_funcs->null_first_cmp_;
+    use_fast_cmp_ = (common::CS_TYPE_BINARY == id_meta.cs_type_);
     if (OB_ISNULL(cmp_func_)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
@@ -59,9 +61,24 @@ int ObSRMergeCmp::cmp(
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
   } else {
+    const ObDatum &ld = get_id_datum(l.iter_idx_);
+    const ObDatum &rd = get_id_datum(r.iter_idx_);
     int tmp_ret = 0;
-    if (OB_FAIL(cmp_func_(
-            get_id_datum(l.iter_idx_), get_id_datum(r.iter_idx_), tmp_ret, nullptr))) {
+    if (use_fast_cmp_ && !ld.is_null() && !rd.is_null()) {
+      // Document ids are fixed-size binary values: memcmp plus a length
+      // tie-break is exactly the binary collation order, so skip the null-safe
+      // wrapper and the collation dispatch that dominate this compare in the
+      // query profile.
+      const int64_t len = MIN(ld.len_, rd.len_);
+      const int c = (len > 0) ? memcmp(ld.ptr_, rd.ptr_, len) : 0;
+      if (0 != c) {
+        tmp_ret = c > 0 ? 1 : -1;
+      } else {
+        const int64_t diff = ld.len_ - rd.len_;
+        tmp_ret = diff > 0 ? 1 : (diff < 0 ? -1 : 0);
+      }
+      cmp_ret = tmp_ret;
+    } else if (OB_FAIL(cmp_func_(ld, rd, tmp_ret, nullptr))) {
     } else {
       cmp_ret = tmp_ret;
     }

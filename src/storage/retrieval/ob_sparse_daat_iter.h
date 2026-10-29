@@ -57,6 +57,11 @@ private:
   // TODO: if memory lifetime of docid datum is guaranteed by dim_iters, we can use pointer to datum directly
   //       and avoid deep copy into merge heap here
   const ObFixedArray<const ObDatum *, ObIAllocator> *iter_ids_;
+  // true when the merged id is a fixed-size binary value, so a plain memcmp +
+  // length tie-break reproduces the binary collation order without going through
+  // the null-safe wrapper and the collation dispatch (a visible share of the
+  // query profile: ob_strnncollsp_binary + ObNullSafeDatumStrCmp).
+  bool use_fast_cmp_;
   bool is_inited_;
 };
 
