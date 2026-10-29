@@ -43,6 +43,7 @@ int ObFTDictHub::init()
 int ObFTDictHub::destroy()
 {
   int ret = OB_SUCCESS;
+  release_pinned_dicts();
   is_inited_ = false;
   return ret;
 }
@@ -76,6 +77,7 @@ int ObFTDictHub::build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &
         if (OB_FAIL(ObFTRangeDict::build_cache_from_ik_dict(desc, container))) {
         } else if (FALSE_IT(info.range_count_ = container.get_handles().size())) {
         } else if (OB_FAIL(put_dict_info(key, info))) {
+        } else if (OB_FAIL(pin_dict(desc.type_, container))) {
         }
       }
     }
@@ -136,5 +138,55 @@ int ObFTDictHub::put_dict_info(const ObFTDictInfoKey &key, const ObFTDictInfo &i
 
   return ret;
 }
+
+int ObFTDictHub::pin_dict(const ObFTDictType type, ObFTCacheRangeContainer &container)
+{
+  int ret = OB_SUCCESS;
+  const int idx = static_cast<int>(type);
+  if (idx <= 0 || idx >= PINNED_DICT_CNT) {
+    // Not a pinnable built-in dictionary type.
+  } else {
+    if (OB_NOT_NULL(pinned_[idx])) {
+      pinned_[idx]->~ObFTCacheRangeContainer();
+      pinned_[idx] = nullptr;
+    }
+    ObFTCacheRangeContainer *pin = OB_NEWx(ObFTCacheRangeContainer, &pin_alloc_, pin_alloc_);
+    if (OB_ISNULL(pin)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      const ObList<ObFTCacheRangeHandle *, ObIAllocator> &src_handles = container.get_handles();
+      ObList<ObFTCacheRangeHandle *, ObIAllocator>::const_iterator iter = src_handles.begin();
+      for (; OB_SUCC(ret) && iter != src_handles.end(); ++iter) {
+        ObFTCacheRangeHandle *src = *iter;
+        ObFTCacheRangeHandle *dst = nullptr;
+        if (OB_FAIL(pin->fetch_info_for_dict(dst))) {
+        } else if (OB_FAIL(dst->handle_.assign(src->handle_))) {
+        } else {
+          dst->type_ = src->type_;
+          dst->key_ = src->key_;
+          dst->value_ = src->value_;
+        }
+      }
+      if (OB_FAIL(ret)) {
+        pin->~ObFTCacheRangeContainer();
+      } else {
+        pinned_[idx] = pin;
+      }
+    }
+  }
+  return ret;
+}
+
+void ObFTDictHub::release_pinned_dicts()
+{
+  for (int i = 0; i < PINNED_DICT_CNT; ++i) {
+    if (OB_NOT_NULL(pinned_[i])) {
+      pinned_[i]->~ObFTCacheRangeContainer();
+      pinned_[i] = nullptr;
+    }
+  }
+  pin_alloc_.reset();
+}
+
 } //  namespace storage
 } //  namespace oceanbase

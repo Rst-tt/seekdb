@@ -17,6 +17,7 @@
 #ifndef _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 #define _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 
+#include "lib/allocator/page_arena.h"
 #include "lib/charset/ob_charset.h"
 #include "lib/lock/ob_bucket_lock.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
@@ -96,7 +97,13 @@ class ObFTCacheRangeContainer;
 class ObFTDictHub
 {
 public:
-  ObFTDictHub() : is_inited_(false), dict_map_(), rw_dict_lock_() {}
+  ObFTDictHub()
+      : is_inited_(false), dict_map_(), rw_dict_lock_(), pin_alloc_(lib::ObMemAttr("IKDictPin"))
+  {
+    for (int i = 0; i < PINNED_DICT_CNT; ++i) {
+      pinned_[i] = nullptr;
+    }
+  }
   ~ObFTDictHub() {}
 
   int init();
@@ -112,12 +119,23 @@ private:
 
   int put_dict_info(const ObFTDictInfoKey &key, const ObFTDictInfo &info);
 
+  // Pin the DAT blocks of an immutable built-in dictionary for the server
+  // lifetime. The blocks live in the shared KV cache and are washed away as
+  // soon as no parser holds a handle, so without a global pin every new SQL
+  // connection rebuilds the dictionary. That rebuild is the dominant cost of
+  // the TOKENIZE() hot path.
+  int pin_dict(const ObFTDictType type, ObFTCacheRangeContainer &container);
+
+  void release_pinned_dicts();
 
 private:
+  static const int PINNED_DICT_CNT = 4; // DICT_TYPE_INVALID/IK_MAIN/IK_QUAN/IK_STOP
   bool is_inited_;
   // holds info of dict
   hash::ObHashMap<ObFTDictInfoKey, ObFTDictInfo> dict_map_;
   ObBucketLock rw_dict_lock_;
+  common::ObArenaAllocator pin_alloc_;
+  ObFTCacheRangeContainer *pinned_[PINNED_DICT_CNT];
 };
 
 } //  namespace storage
