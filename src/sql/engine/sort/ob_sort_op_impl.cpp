@@ -356,7 +356,8 @@ int ObSortOpImpl::ObAdaptiveQS::compare_vals(int64_t l, int64_t r,
 
 ObSortOpImpl::Compare::Compare()
   : ret_(OB_SUCCESS), sort_collations_(nullptr), sort_cmp_funs_(nullptr),
-    exec_ctx_(nullptr), access_ctx_(nullptr), cmp_count_(0), cmp_start_(0), cmp_end_(0)
+    exec_ctx_(nullptr), access_ctx_(nullptr), cached_key_cnt_(0),
+    cmp_count_(0), cmp_start_(0), cmp_end_(0)
 {
 }
 
@@ -380,6 +381,20 @@ int ObSortOpImpl::Compare::init(
     cmp_start_ = 0;
     cmp_end_ = sort_cmp_funs_->count();
     enable_encode_sortkey_ = enable_encode_sortkey;
+    cached_key_cnt_ = 0;
+    if (cnt_ > 0 && cnt_ <= MAX_CACHED_SORT_KEYS) {
+      bool cacheable = true;
+      for (int64_t i = 0; cacheable && i < cnt_; ++i) {
+        const ObSortFieldCollation &collation = sort_collations_->at(i);
+        cached_keys_[i].field_idx_ = collation.field_idx_;
+        cached_keys_[i].is_ascending_ = collation.is_ascending_;
+        cached_keys_[i].cmp_func_ = sort_cmp_funs_->at(i).cmp_func_;
+        cacheable = (nullptr != cached_keys_[i].cmp_func_);
+      }
+      if (cacheable) {
+        cached_key_cnt_ = cnt_;
+      }
+    }
   }
   return ret;
 }
@@ -413,6 +428,22 @@ bool ObSortOpImpl::Compare::operator()(
     int cmp = 0;
     cmp = MEMCMP(l_cell.ptr_, r_cell.ptr_, min(l_cell.len_, r_cell.len_));
     less = cmp != 0 ? (cmp < 0) : (l_cell.len_ - r_cell.len_) < 0;
+  } else if (cached_key_cnt_ > 0 && cmp_start_ < cached_key_cnt_
+             && cmp_end_ <= cached_key_cnt_) {
+    // Flattened sort keys, no virtual call per comparison, see CachedSortKey.
+    const ObDatum *lcells = l->cells();
+    const ObDatum *rcells = r->cells();
+    int cmp = 0;
+    for (int64_t i = cmp_start_; 0 == cmp && i < cmp_end_ && OB_SUCC(ret); i++) {
+      const CachedSortKey &key = cached_keys_[i];
+      if (OB_FAIL(
+              key.cmp_func_(lcells[key.field_idx_], rcells[key.field_idx_], cmp, access_ctx_))) {
+      } else if (cmp < 0) {
+        less = key.is_ascending_;
+      } else if (cmp > 0) {
+        less = !key.is_ascending_;
+      }
+    }
   } else {
     const ObDatum *lcells = l->cells();
     const ObDatum *rcells = r->cells();

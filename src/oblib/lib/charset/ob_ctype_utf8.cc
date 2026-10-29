@@ -372,6 +372,36 @@ int __attribute__ ((noinline))  ob_strnncollsp_utf8mb4_help(
   return 0;
 }
 
+// Number of leading bytes shared by both buffers.
+// Two strings that agree on a byte prefix always decode that prefix to the same
+// characters, hence to the same collation weights, so a byte compare can skip
+// the whole common prefix instead of decoding it character by character.
+static inline size_t ob_utf8mb4_common_prefix_len(const unsigned char *lhs,
+                                                  const unsigned char *rhs,
+                                                  const size_t len)
+{
+  size_t off = 0;
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) \
+    && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) && defined(__GNUC__)
+  const size_t step = sizeof(uint64_t);
+  while (off + step <= len) {
+    uint64_t lv = 0;
+    uint64_t rv = 0;
+    memcpy(&lv, lhs + off, step);
+    memcpy(&rv, rhs + off, step);
+    const uint64_t diff = lv ^ rv;
+    if (0 != diff) {
+      return off + (static_cast<size_t>(__builtin_ctzll(diff)) >> 3);
+    }
+    off += step;
+  }
+#endif
+  while (off < len && lhs[off] == rhs[off]) {
+    ++off;
+  }
+  return off;
+}
+
 static int ob_strnncollsp_utf8mb4(const ObCharsetInfo *cs,
                        const unsigned char *src, size_t srclen,
                        const unsigned char *dst, size_t dstlen,
@@ -382,6 +412,27 @@ static int ob_strnncollsp_utf8mb4(const ObCharsetInfo *cs,
   const unsigned char *se= src + srclen, *te= dst + dstlen;
   ObUnicaseInfo *uni_plane= cs->caseinfo;
   while ( src < se && dst < te ) {
+    // Skip the byte identical part of both remains. Those characters compare
+    // equal, so only the first differing character can decide the result.
+    const size_t remain = static_cast<size_t>(se - src) < static_cast<size_t>(te - dst) ?
+                          static_cast<size_t>(se - src) : static_cast<size_t>(te - dst);
+    size_t same = ob_utf8mb4_common_prefix_len(src, dst, remain);
+    if (same > 0) {
+      if (same < remain) {
+        // Restart the character loop on a character boundary. For well formed
+        // input `same` already points at one; stepping back over continuation
+        // bytes keeps the result identical for malformed input as well.
+        while (same > 0
+               && (0x80 == (src[same] & 0xC0) || 0x80 == (dst[same] & 0xC0))) {
+          --same;
+        }
+      }
+      src += same;
+      dst += same;
+    }
+    if (src >= se || dst >= te) {
+      break;
+    }
     int s_res= ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res= ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);
     if ( s_res <= 0 || t_res <= 0 ) {

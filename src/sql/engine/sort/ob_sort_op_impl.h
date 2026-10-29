@@ -477,6 +477,20 @@ public:
     ObExecContext *exec_ctx_;
     const common::ObDatumAccessContext *access_ctx_;
     bool enable_encode_sortkey_;
+    // Flattened copy of the sort key descriptors. Walking
+    // sort_collations_/sort_cmp_funs_ through the ObIArray interface costs two
+    // virtual calls per comparison, which is a measurable part of the profile
+    // of sort heavy statements. The common case (a few sort keys) is therefore
+    // cached in a plain array that the comparator can index directly.
+    static const int64_t MAX_CACHED_SORT_KEYS = 4;
+    struct CachedSortKey
+    {
+      int64_t field_idx_;
+      bool is_ascending_;
+      common::ObDatumCmpFuncType cmp_func_;
+    };
+    CachedSortKey cached_keys_[MAX_CACHED_SORT_KEYS];
+    int64_t cached_key_cnt_;
     int64_t cmp_count_;
     int64_t cmp_start_;
     int64_t cmp_end_;

@@ -505,6 +505,41 @@ public:
                       int64_t str2_len,
                       bool cmp_endspace);
 
+  // Hot path variant of strcmpsp() for callers that already know the collation
+  // type is valid (for example a datum comparison that was compiled for a
+  // specific collation). strcmpsp() is out of line, so every call pays for the
+  // argument validation, for the lazily initialized charset lookup and for an
+  // extra function call. Those checks show up as a measurable share of the
+  // profile of sort heavy code paths, while the actual collation work is the
+  // same. Anything unexpected falls back to strcmpsp() and is handled exactly
+  // as before.
+  static int OB_INLINE strcmpsp_fast(const ObCollationType collation_type,
+                                     const char *str1,
+                                     const int64_t str1_len,
+                                     const char *str2,
+                                     const int64_t str2_len,
+                                     const bool cmp_endspace)
+  {
+    int result = 0;
+    const ObCharsetInfo *cs = NULL;
+    if (OB_LIKELY(collation_type > CS_TYPE_INVALID && collation_type < CS_TYPE_MAX)
+        && OB_NOT_NULL(cs = charset_arr_inited[collation_type])
+        && OB_NOT_NULL(cs->coll)
+        && OB_LIKELY(str1_len >= 0 && str2_len >= 0)
+        && OB_LIKELY((NULL != str1 || 0 == str1_len)
+                     && (NULL != str2 || 0 == str2_len))) {
+      result = cs->coll->strnncollsp(cs,
+                                     reinterpret_cast<const unsigned char *>(str1),
+                                     static_cast<size_t>(str1_len),
+                                     reinterpret_cast<const unsigned char *>(str2),
+                                     static_cast<size_t>(str2_len),
+                                     cmp_endspace);
+    } else {
+      result = strcmpsp(collation_type, str1, str1_len, str2, str2_len, cmp_endspace);
+    }
+    return result;
+  }
+
   static size_t casedn(const ObCollationType collation_type,
                        char *src, size_t src_len,
                        char *dest, size_t dest_len);
