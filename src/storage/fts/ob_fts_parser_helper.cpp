@@ -16,6 +16,7 @@
 
 #include "object/ob_object.h"
 #include "storage/fts/ob_fts_struct.h"
+#include <string.h>
 #define USING_LOG_PREFIX STORAGE_FTS
 
 #include "storage/fts/ob_fts_parser_helper.h"
@@ -35,6 +36,90 @@ namespace oceanbase
 {
 namespace storage
 {
+
+namespace
+{
+// The parser properties of a full text parser only depend on the parser name and
+// the serialized property string. Both are constant for a given index (and for a
+// TOKENIZE() call they are constant for the whole query), but deriving them from
+// the serialized JSON is repeated for every row / document. Cache the derived
+// parser description, property and add word flag per thread.
+struct ObFtsParserHelperCacheEntry
+{
+  static const int64_t MAX_KEY_LEN = 640;
+  int64_t key_len_;
+  char key_[MAX_KEY_LEN];
+  ObFTParserProperty property_;
+  const ObIFTParserDesc *desc_;
+  ObAddWordFlag flag_;
+};
+
+struct ObFtsParserHelperCache
+{
+  static const int64_t MAX_ENTRY_CNT = 8;
+  int64_t cnt_;
+  ObFtsParserHelperCacheEntry entries_[MAX_ENTRY_CNT];
+};
+
+thread_local ObFtsParserHelperCache TL_FTS_PARSER_HELPER_CACHE;
+
+bool build_ft_parser_cache_key(const common::ObString &parser_name,
+                               const common::ObString &parser_properties,
+                               char *buf,
+                               const int64_t buf_len,
+                               int64_t &key_len)
+{
+  bool bret = true;
+  key_len = 0;
+  if (OB_ISNULL(buf) || parser_name.empty()
+      || parser_name.length() + parser_properties.length() + 1 > buf_len) {
+    bret = false;
+  } else {
+    memcpy(buf, parser_name.ptr(), parser_name.length());
+    key_len = parser_name.length();
+    buf[key_len] = '\0';
+    ++key_len;
+    if (!parser_properties.empty()) {
+      memcpy(buf + key_len, parser_properties.ptr(), parser_properties.length());
+    }
+    key_len += parser_properties.length();
+  }
+  return bret;
+}
+
+ObFtsParserHelperCacheEntry *find_ft_parser_cache_entry(const char *key, const int64_t key_len)
+{
+  ObFtsParserHelperCacheEntry *entry = nullptr;
+  for (int64_t i = 0; nullptr == entry && i < TL_FTS_PARSER_HELPER_CACHE.cnt_; ++i) {
+    ObFtsParserHelperCacheEntry &cur = TL_FTS_PARSER_HELPER_CACHE.entries_[i];
+    if (cur.key_len_ == key_len && 0 == memcmp(cur.key_, key, key_len)) {
+      entry = &cur;
+    }
+  }
+  return entry;
+}
+
+void put_ft_parser_cache_entry(const char *key,
+                               const int64_t key_len,
+                               const ObFTParserProperty &property,
+                               const ObIFTParserDesc *desc,
+                               const ObAddWordFlag &flag)
+{
+  if (nullptr != key && nullptr != desc && key_len > 0
+      && key_len < ObFtsParserHelperCacheEntry::MAX_KEY_LEN
+      && TL_FTS_PARSER_HELPER_CACHE.cnt_ >= 0
+      && TL_FTS_PARSER_HELPER_CACHE.cnt_ < ObFtsParserHelperCache::MAX_ENTRY_CNT) {
+    ObFtsParserHelperCacheEntry &entry =
+        TL_FTS_PARSER_HELPER_CACHE.entries_[TL_FTS_PARSER_HELPER_CACHE.cnt_];
+    memcpy(entry.key_, key, key_len);
+    entry.key_len_ = key_len;
+    entry.property_ = property;
+    entry.desc_ = desc;
+    entry.flag_ = flag;
+    ++TL_FTS_PARSER_HELPER_CACHE.cnt_;
+  }
+}
+} // anonymous namespace
 
 const char *ObFTParser::NAME_STR[ObFTParser::ParserType::FTP_MAX] = {
 #define FT_PARSER_TYPE(ftp_type, parser_name) #parser_name,
@@ -330,11 +415,24 @@ int ObFTParseHelper::init(
     const common::ObString &parser_properties)
 {
   int ret = OB_SUCCESS;
+  char key_buf[ObFtsParserHelperCacheEntry::MAX_KEY_LEN];
+  int64_t key_len = 0;
+  const bool key_ok = build_ft_parser_cache_key(
+      parser_name, parser_properties, key_buf, sizeof(key_buf), key_len);
+  ObFtsParserHelperCacheEntry *cached =
+      key_ok ? find_ft_parser_cache_entry(key_buf, key_len) : nullptr;
+
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
   } else if (OB_ISNULL(allocator) || OB_UNLIKELY(parser_name.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(parser_name_.parse_from_str(parser_name.ptr(), parser_name.length()))) {
+  } else if (nullptr != cached) {
+    parser_property_ = cached->property_;
+    parser_desc_ = cached->desc_;
+    add_word_flag_ = cached->flag_;
+    allocator_ = allocator;
+    is_inited_ = true;
   } else if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_name_, parser_properties))) {
   } else if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
   } else if (OB_ISNULL(parser_desc_)) {
@@ -343,6 +441,9 @@ int ObFTParseHelper::init(
   } else {
     allocator_ = allocator;
     is_inited_ = true;
+    if (key_ok) {
+      put_ft_parser_cache_entry(key_buf, key_len, parser_property_, parser_desc_, add_word_flag_);
+    }
   }
   if (OB_FAIL(ret) && OB_UNLIKELY(!is_inited_)) {
     reset();
