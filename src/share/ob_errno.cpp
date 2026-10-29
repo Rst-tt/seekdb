@@ -13910,8 +13910,8 @@ static const _error _error_OB_AI_COLUMN_NOT_READY = {
       .error_solution        = "Contact OceanBase Support",
       .mysql_errno           = -1,
       .sqlstate              = "HY000",
-      .str_error             = "AI column result is not ready in strict read mode",
-      .str_user_error        = "AI column result is not ready in strict read mode"
+      .str_error             = "AI column has unfinished tasks for table_id=%lu, column_id=%lu",
+      .str_user_error        = "AI column has unfinished tasks for table_id=%lu, column_id=%lu"
 };
 static const _error _error_OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN = {
       .error_name            = "OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN",

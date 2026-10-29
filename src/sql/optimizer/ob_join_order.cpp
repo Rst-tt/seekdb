@@ -4850,6 +4850,51 @@ int ObJoinOrder::estimate_size_for_base_table(PathHelper &helper,
                                                        filter_exprs,
                                                        helper.est_method_))) {
   } else {
+    if (stmt->has_vec_approx() && helper.filters_.empty()
+        && OB_NOT_NULL(stmt->get_limit_expr())) {
+      int64_t limit_count = 0;
+      int64_t offset_count = 0;
+      bool is_null_value = false;
+      int limit_ret = ObTransformUtils::get_limit_value(
+          stmt->get_limit_expr(),
+          get_plan()->get_optimizer_context().get_params(),
+          get_plan()->get_optimizer_context().get_exec_ctx(),
+          &get_plan()->get_optimizer_context().get_allocator(),
+          limit_count,
+          is_null_value);
+      int offset_ret = OB_SUCCESS;
+      if (OB_SUCCESS == limit_ret && !is_null_value
+          && OB_NOT_NULL(stmt->get_offset_expr())) {
+        offset_ret = ObTransformUtils::get_limit_value(
+            stmt->get_offset_expr(),
+            get_plan()->get_optimizer_context().get_params(),
+            get_plan()->get_optimizer_context().get_exec_ctx(),
+            &get_plan()->get_optimizer_context().get_allocator(),
+            offset_count,
+            is_null_value);
+      }
+      if (OB_SUCCESS == limit_ret && OB_SUCCESS == offset_ret
+          && !is_null_value && limit_count >= 0 && offset_count >= 0
+          && limit_count <= INT64_MAX - offset_count - 1) {
+        // An approximate HNSW scan may need one extra candidate for stale entries.
+        const double candidate_count =
+            static_cast<double>(limit_count + offset_count + 1);
+        for (int64_t i = 0; OB_SUCC(ret) && i < access_paths.count(); ++i) {
+          AccessPath *path = access_paths.at(i);
+          if (OB_ISNULL(path)) {
+            ret = OB_ERR_UNEXPECTED;
+          } else if (path->vec_idx_info_.inited_
+                     && path->vec_idx_info_.vec_extra_info_.is_hnsw_vec_scan()
+                     && candidate_count
+                        > path->est_cost_info_.output_row_count_) {
+            path->est_cost_info_.output_row_count_ = candidate_count;
+            path->est_cost_info_.logical_query_range_row_count_ = candidate_count;
+            path->est_cost_info_.phy_query_range_row_count_ = candidate_count;
+            path->est_cost_info_.index_back_row_count_ = candidate_count;
+          }
+        }
+      }
+    }
     LOG_TRACE("estimate rows for base table", K(output_rows_),
                 K(get_plan()->get_basic_table_metas()), K(output_row_size_));
   }

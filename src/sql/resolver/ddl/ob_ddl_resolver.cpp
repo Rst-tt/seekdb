@@ -201,8 +201,6 @@ int check_ai_column_dependencies(const ObString &dep_names,
       const ObColumnSchemaV2 *dep_column = table_schema.get_column_schema(dep_name);
       if (OB_NOT_NULL(dep_column) && dep_column->is_ai_column()) {
         ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                       "an ai column cannot depend on another ai column");
       }
     }
     if (end >= dep_names.length()) {

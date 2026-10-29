@@ -2045,7 +2045,9 @@ int ObDMLResolver::check_ai_column_strict_read(
           int tmp_ret = res.get_result()->next();
           if (OB_SUCCESS == tmp_ret) {
             ret = OB_AI_COLUMN_NOT_READY;
-            LOG_USER_ERROR(OB_AI_COLUMN_NOT_READY);
+            LOG_USER_ERROR(OB_AI_COLUMN_NOT_READY,
+                           table_schema.get_table_id(),
+                           ai_column.get_column_id());
           } else if (OB_ITER_END == tmp_ret) {
             ret = OB_SUCCESS;
           } else {

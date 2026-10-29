@@ -412,7 +412,7 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
             && node.num_child_ != 1) {
           ret = OB_NOT_SUPPORTED;
           LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                         "retry ai column cannot be combined with another alter action");
+                         "combining AI COLUMN RETRY with another ALTER action");
         }
         if (OB_FAIL(ret)) {
           continue;
@@ -3536,7 +3536,7 @@ int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
     if (OB_ISNULL(ai_column = table_schema_->get_column_schema(column_name))
         || !ai_column->is_ai_column()) {
       ret = OB_NOT_SUPPORTED;
-      LOG_USER_ERROR(OB_NOT_SUPPORTED, "retry ai column target must be an AI column");
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "retrying a column that is not an AI column");
     } else if (OB_ISNULL(status_column = table_schema_->get_column_schema(
                            ai_column->get_ai_column_status_column_id()))) {
       ret = OB_ERR_UNEXPECTED;

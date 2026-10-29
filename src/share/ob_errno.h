@@ -2762,7 +2762,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_AI_FUNC_PARAM_TYPE_INVALID__USER_ERROR_MSG "This type of param \'%.*s\' is invalid, should be %.*s"
 #define OB_AI_FUNC_MODEL_NOT_FOUND__USER_ERROR_MSG "This AI model \'%.*s\' was not found"
 #define OB_AI_FUNC_MODEL_EXISTS__USER_ERROR_MSG "This ai model \'%.*s\' is already exists"
-#define OB_AI_COLUMN_NOT_READY__USER_ERROR_MSG "AI column result is not ready in strict read mode"
+#define OB_AI_COLUMN_NOT_READY__USER_ERROR_MSG "AI column has unfinished tasks for table_id=%lu, column_id=%lu"
 #define OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN__USER_ERROR_MSG "CLOB or NCLOB in multibyte character set not supported"
 #define OB_ERR_UPDATE_TWICE__USER_ERROR_MSG "unable to get a stable set of rows in the source tables"
 #define OB_ERR_SNAPSHOT_QUERY_WITH_UPDATE__USER_ERROR_MSG "snapshot expression not allowed here"
