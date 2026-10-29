@@ -15,6 +15,7 @@
  */
 
 #include "sql/engine/expr/ob_expr_tokenize.h"
+#include <string.h>
 
 #include "lib/alloc/alloc_struct.h"
 #include "lib/allocator/page_arena.h"
@@ -39,6 +40,71 @@ namespace oceanbase
 {
 namespace sql
 {
+namespace
+{
+// TOKENIZE() is usually evaluated once per row while its parser name and parser
+// properties are constant columns/literals. Turning the parser name into the
+// normalized form and rebuilding the default parser properties involves a couple
+// of JSON parse/serialize round trips which are repeated for every row. The
+// result only depends on the (constant) parser name, so cache it per thread.
+struct ObFtsTokenizeCacheEntry
+{
+  static const int64_t MAX_KEY_LEN = 64;
+  static const int64_t MAX_VALUE_LEN = 1024;
+  int64_t key_len_;
+  int64_t value_len_;
+  char key_[MAX_KEY_LEN];
+  char value_[MAX_VALUE_LEN];
+};
+
+struct ObFtsTokenizeCache
+{
+  static const int64_t MAX_ENTRY_CNT = 8;
+  int64_t count_;
+  ObFtsTokenizeCacheEntry entries_[MAX_ENTRY_CNT];
+};
+
+thread_local ObFtsTokenizeCache TL_FTS_TOKENIZE_CACHE;
+
+const char *fts_tokenize_cache_get(const char *key, const int64_t key_len, int64_t &value_len)
+{
+  const char *value = nullptr;
+  value_len = 0;
+  if (nullptr != key && key_len > 0 && key_len < ObFtsTokenizeCacheEntry::MAX_KEY_LEN) {
+    for (int64_t i = 0; i < TL_FTS_TOKENIZE_CACHE.count_; ++i) {
+      const ObFtsTokenizeCacheEntry &entry = TL_FTS_TOKENIZE_CACHE.entries_[i];
+      if (entry.key_len_ == key_len && 0 == memcmp(entry.key_, key, key_len)) {
+        value = entry.value_;
+        value_len = entry.value_len_;
+        break;
+      }
+    }
+  }
+  return value;
+}
+
+void fts_tokenize_cache_put(const char *key,
+                            const int64_t key_len,
+                            const char *value,
+                            const int64_t value_len)
+{
+  if (nullptr != key && nullptr != value && key_len > 0 && value_len >= 0
+      && key_len < ObFtsTokenizeCacheEntry::MAX_KEY_LEN
+      && value_len < ObFtsTokenizeCacheEntry::MAX_VALUE_LEN
+      && TL_FTS_TOKENIZE_CACHE.count_ >= 0
+      && TL_FTS_TOKENIZE_CACHE.count_ < ObFtsTokenizeCache::MAX_ENTRY_CNT) {
+    ObFtsTokenizeCacheEntry &entry =
+        TL_FTS_TOKENIZE_CACHE.entries_[TL_FTS_TOKENIZE_CACHE.count_];
+    memcpy(entry.key_, key, key_len);
+    entry.key_len_ = key_len;
+    memcpy(entry.value_, value, value_len);
+    entry.value_[value_len] = '\0';
+    entry.value_len_ = value_len;
+    ++TL_FTS_TOKENIZE_CACHE.count_;
+  }
+}
+} // anonymous namespace
+
 ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
     : ObStringExprOperator(alloc,
                            T_FUN_TOKENIZE,
@@ -221,16 +287,27 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
 int ObExprTokenize::construct_ft_parser_inner_name(const ObString &input_str, TokenizeParam &param)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParser parser;
+  int64_t cached_len = 0;
+  const char *cached_value = fts_tokenize_cache_get(input_str.ptr(), input_str.length(), cached_len);
 
-  char *parser_name_buf = nullptr;
-  if (OB_ISNULL(parser_name_buf
-                = static_cast<char *>(param.allocator_.alloc(storage::OB_FT_PARSER_NAME_LENGTH)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (OB_FAIL(parser.init(input_str))) {
-  } else if (OB_FAIL(parser.serialize_to_str(parser_name_buf, storage::OB_FT_PARSER_NAME_LENGTH))) {
+  if (nullptr != cached_value) {
+    param.parser_name_.assign_ptr(cached_value, static_cast<int32_t>(cached_len));
   } else {
-    param.parser_name_ = ObString::make_string(parser_name_buf);
+    storage::ObFTParser parser;
+
+    char *parser_name_buf = nullptr;
+    if (OB_ISNULL(parser_name_buf
+                  = static_cast<char *>(param.allocator_.alloc(storage::OB_FT_PARSER_NAME_LENGTH)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else if (OB_FAIL(parser.init(input_str))) {
+    } else if (OB_FAIL(parser.serialize_to_str(parser_name_buf, storage::OB_FT_PARSER_NAME_LENGTH))) {
+    } else {
+      param.parser_name_ = ObString::make_string(parser_name_buf);
+      fts_tokenize_cache_put(input_str.ptr(),
+                             input_str.length(),
+                             parser_name_buf,
+                             param.parser_name_.length());
+    }
   }
   return ret;
 }
@@ -375,15 +452,44 @@ int ObExprTokenize::parse_parser_properties(const ObExpr &expr,
 int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &properties)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParserJsonProps parser_properties;
 
-  if (OB_FAIL(parser_properties.init())) {
-  } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
-  } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
-                                                             ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                                                             true))) {
-  } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+  if (properties.empty()) {
+    // No user specified properties: the rebuilt default properties only depend on
+    // the parser name. Cache the serialized result to avoid repeating the JSON
+    // parse/rebuild/serialize steps for every row.
+    int64_t cached_len = 0;
+    const char *cached_value =
+        fts_tokenize_cache_get(parser_name_.ptr(), parser_name_.length(), cached_len);
+    if (nullptr != cached_value) {
+      properties_.assign_ptr(cached_value, static_cast<int32_t>(cached_len));
+    } else {
+      storage::ObFTParserJsonProps parser_properties;
+
+      if (OB_FAIL(parser_properties.init())) {
+      } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
+      } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
+                                                                 ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                                                                 true))) {
+      } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+      } else if (properties_.length() < ObFtsTokenizeCacheEntry::MAX_VALUE_LEN) {
+        fts_tokenize_cache_put(parser_name_.ptr(),
+                               parser_name_.length(),
+                               properties_.ptr(),
+                               properties_.length());
+      }
+    }
+  } else {
+    storage::ObFTParserJsonProps parser_properties;
+
+    if (OB_FAIL(parser_properties.init())) {
+    } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
+    } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
+                                                               ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                                                               true))) {
+    } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+    }
   }
 
   return ret;

@@ -44,6 +44,30 @@ namespace oceanbase
 namespace storage
 {
 
+namespace
+{
+// Fast equivalent of ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN, lhs, rhs): byte
+// order comparison with a length tie-break. The range boundaries of the fts
+// dictionaries are always compared in the binary collation, and this helper is
+// used on the per-character tokenize hot path where the generic charset
+// comparison (charset dispatch + per-character utf8 comparison) is far too
+// heavy.
+inline int fts_binary_strcmp(const ObString &lhs, const ObString &rhs)
+{
+  const int64_t lhs_len = lhs.length();
+  const int64_t rhs_len = rhs.length();
+  const int64_t cmp_len = lhs_len < rhs_len ? lhs_len : rhs_len;
+  int cmp = 0;
+  if (cmp_len > 0) {
+    cmp = memcmp(lhs.ptr(), rhs.ptr(), static_cast<size_t>(cmp_len));
+  }
+  if (0 == cmp) {
+    cmp = lhs_len < rhs_len ? -1 : (lhs_len > rhs_len ? 1 : 0);
+  }
+  return cmp < 0 ? -1 : (cmp > 0 ? 1 : 0);
+}
+} // anonymous namespace
+
 
 int ObFTRangeDict::build_cache_from_ik_dict(const ObFTDictDesc &desc, ObFTCacheRangeContainer &range_container)
 {
@@ -383,14 +407,12 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
   int ret = OB_SUCCESS;
   bool found = false;
   for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
-                          single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
+    // Every range boundary in the fts dictionaries is compared in the binary
+    // collation, i.e. plain byte order followed by a length tie-break. Doing
+    // that inline avoids a charset dispatch plus a per-character utf8 compare
+    // for every single character of the text being tokenized.
+    if (fts_binary_strcmp(range_dicts_[i].start_.get_word(), single_word) <= 0
+        && fts_binary_strcmp(range_dicts_[i].end_.get_word(), single_word) >= 0) {
       dict = range_dicts_[i].dict_;
       found = true;
     }
