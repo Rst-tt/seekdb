@@ -266,6 +266,10 @@ int assign(const ObColumnSchemaV2 &src_schema);
   common::ObString get_ai_column_complete_prompt() const;
   int set_ai_column_complete_config(const common::ObString &config);
   common::ObString get_ai_column_complete_config() const;
+  int set_ai_column_request_column_id(uint64_t column_id);
+  uint64_t get_ai_column_request_column_id() const;
+  int set_ai_column_result_spec_column_id(uint64_t column_id);
+  uint64_t get_ai_column_result_spec_column_id() const;
   // to check whether storing column in index table is specified by user.
   inline bool is_user_specified_storing_column() const { return column_flags_ & USER_SPECIFIED_STORING_COLUMN_FLAG; }
   inline bool is_default_srid() const { return UINT32_MAX == srs_info_.srid_; }

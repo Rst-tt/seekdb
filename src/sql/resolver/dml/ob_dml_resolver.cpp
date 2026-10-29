@@ -1948,8 +1948,8 @@ int ObDMLResolver::check_ai_column_strict_read(
         } else {
           int tmp_ret = res.get_result()->next();
           if (OB_SUCCESS == tmp_ret) {
-            ret = OB_NOT_SUPPORTED;
-            LOG_USER_ERROR(OB_NOT_SUPPORTED, "ai column is not ready in strict read mode");
+            ret = OB_AI_COLUMN_NOT_READY;
+            LOG_USER_ERROR(OB_AI_COLUMN_NOT_READY);
           } else if (OB_ITER_END == tmp_ret) {
             ret = OB_SUCCESS;
           } else {

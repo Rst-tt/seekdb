@@ -403,6 +403,20 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
         SQL_RESV_LOG(WARN, "invalid parse tree!", K(ret));
       } else if (FALSE_IT(alter_table_stmt->inc_alter_table_action_count())) {
       } else {
+        const ParseNode *retry_node = action_node;
+        if (T_ALTER_COLUMN_OPTION == retry_node->type_
+            && 1 == retry_node->num_child_ && OB_NOT_NULL(retry_node->children_)) {
+          retry_node = retry_node->children_[0];
+        }
+        if (OB_NOT_NULL(retry_node) && T_RETRY_AI_COLUMN == retry_node->type_
+            && node.num_child_ != 1) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                         "retry ai column cannot be combined with another alter action");
+        }
+        if (OB_FAIL(ret)) {
+          continue;
+        }
         switch (action_node->type_) {
         //deal with alter table option
         case T_ALTER_TABLE_OPTION: {
@@ -3469,6 +3483,36 @@ int rewrite_retry_condition(const char *src,
   }
   return ret;
 }
+
+int append_retry_rowkey_expr(const ObTableSchema &table_schema, ObSqlString &expr)
+{
+  int ret = OB_SUCCESS;
+  const ObRowkeyInfo &rowkey_info = table_schema.get_rowkey_info();
+  if (rowkey_info.get_size() <= 0) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(expr.append("CONCAT("))) {
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < rowkey_info.get_size(); ++i) {
+    const ObRowkeyColumn *rowkey_column = rowkey_info.get_column(i);
+    const ObColumnSchemaV2 *column = OB_NOT_NULL(rowkey_column)
+        ? table_schema.get_column_schema(rowkey_column->column_id_) : NULL;
+    if (OB_ISNULL(column)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (i > 0 && OB_FAIL(expr.append(", ' AND ', "))) {
+    } else if (OB_FAIL(expr.append("'`"))) {
+    } else if (OB_FAIL(expr.append(column->get_column_name_str().ptr(),
+                                   column->get_column_name_str().length()))) {
+    } else if (OB_FAIL(expr.append("` = ', QUOTE(`"))) {
+    } else if (OB_FAIL(expr.append(column->get_column_name_str().ptr(),
+                                   column->get_column_name_str().length()))) {
+    } else if (OB_FAIL(expr.append("`)"))) {
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ret = expr.append(")");
+  }
+  return ret;
+}
 } // namespace
 
 int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
@@ -3478,6 +3522,7 @@ int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
   const ParseNode *where_node = node.num_child_ > 1 ? node.children_[1] : NULL;
   const ObColumnSchemaV2 *ai_column = NULL;
   const ObColumnSchemaV2 *status_column = NULL;
+  const ObColumnSchemaV2 *gen_column = NULL;
   const ObDatabaseSchema *db_schema = NULL;
   ObString column_name;
   if (OB_ISNULL(column_node) || column_node->str_len_ <= 0
@@ -3490,12 +3535,13 @@ int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
     column_name.assign_ptr(column_node->str_value_, static_cast<int32_t>(column_node->str_len_));
     if (OB_ISNULL(ai_column = table_schema_->get_column_schema(column_name))
         || !ai_column->is_ai_column()) {
-      ret = OB_ERR_BAD_FIELD_ERROR;
-      LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, column_name.length(), column_name.ptr(),
-                     table_schema_->get_table_name_str().length(),
-                     table_schema_->get_table_name_str().ptr());
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "retry ai column target must be an AI column");
     } else if (OB_ISNULL(status_column = table_schema_->get_column_schema(
                            ai_column->get_ai_column_status_column_id()))) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_ISNULL(gen_column = table_schema_->get_column_schema(
+                           ai_column->get_ai_column_gen_column_id()))) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(schema_checker_->get_database_schema(table_schema_->get_database_id(),
                                                             db_schema))) {
@@ -3507,13 +3553,19 @@ int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
     const ObString &db_name = db_schema->get_database_name_str();
     const ObString &table_name = table_schema_->get_table_name_str();
     ObSqlString sql;
-    if (OB_FAIL(sql.append_fmt("UPDATE `%.*s`.`%.*s` SET `%.*s` = NULL, `%.*s` = 0",
+    ObSqlString where_clause;
+    if (OB_FAIL(sql.append_fmt("UPDATE `%.*s`.`%.*s` SET `%.*s` = NULL, `%.*s` = 0, "
+                               "`%.*s` = `%.*s` + 1",
                                db_name.length(), db_name.ptr(),
                                table_name.length(), table_name.ptr(),
                                ai_column->get_column_name_str().length(),
                                ai_column->get_column_name(),
                                status_column->get_column_name_str().length(),
-                               status_column->get_column_name()))) {
+                               status_column->get_column_name(),
+                               gen_column->get_column_name_str().length(),
+                               gen_column->get_column_name(),
+                               gen_column->get_column_name_str().length(),
+                               gen_column->get_column_name()))) {
     } else if (OB_NOT_NULL(where_node)) {
       const ParseNode *condition_node = where_node->num_child_ > 0
                                             ? where_node->children_[0] : NULL;
@@ -3531,14 +3583,34 @@ int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
                                                  condition_str.length(),
                                                  status_column->get_column_name_str(),
                                                  condition))) {
-      } else if (OB_FAIL(sql.append(" WHERE "))) {
-      } else if (OB_FAIL(sql.append(condition.ptr()))) {
+      } else if (OB_FAIL(where_clause.append(" WHERE "))) {
+      } else if (OB_FAIL(where_clause.append(condition.ptr(), condition.length()))) {
       }
     }
     if (OB_SUCC(ret)) {
       int64_t affected_rows = 0;
-      if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
+      if (OB_FAIL(sql.append(where_clause.ptr(), where_clause.length()))) {
+      } else if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
         LOG_WARN("retry ai column failed", K(ret), K(sql));
+      } else {
+        sql.reuse();
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(sql.append_fmt(
+                     "INSERT INTO oceanbase.__all_ai_column_task "
+                     "(task_id, table_id, column_id, request_id, eligible_ts, "
+                     "rowkey_predicate, state, retry_count, generation) "
+                     "SELECT uuid_short(), %lu, %lu, uuid_short(), now(6), ",
+                     table_schema_->get_table_id(), ai_column->get_column_id()))) {
+      } else if (OB_FAIL(append_retry_rowkey_expr(*table_schema_, sql))) {
+      } else if (OB_FAIL(sql.append_fmt(", 0, 0, `%.*s` FROM `%.*s`.`%.*s`",
+                                         gen_column->get_column_name_str().length(),
+                                         gen_column->get_column_name(),
+                                         db_name.length(), db_name.ptr(),
+                                         table_name.length(), table_name.ptr()))) {
+      } else if (OB_FAIL(sql.append(where_clause.ptr(), where_clause.length()))) {
+      } else if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
+        LOG_WARN("enqueue retry ai column tasks failed", K(ret), K(sql));
       }
     }
   }

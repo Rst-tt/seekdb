@@ -521,7 +521,7 @@ int ObColumnSchemaV2::add_type_info(const ObString &type_info)
 
 namespace
 {
-constexpr int64_t AI_COLUMN_META_FIELD_CNT = 11;
+constexpr int64_t AI_COLUMN_META_FIELD_CNT = 13;
 constexpr char AI_COLUMN_META_SEP = '\x1f';
 constexpr ObSysVarClassType AI_COLUMN_META_VAR_TYPE = SYS_VAR_SQL_MODE;
 
@@ -814,6 +814,56 @@ ObString ObColumnSchemaV2::get_ai_column_complete_config() const
     get_ai_meta_field(meta, 10, field);
   }
   return field;
+}
+
+int ObColumnSchemaV2::set_ai_column_request_column_id(uint64_t column_id)
+{
+  int ret = OB_SUCCESS;
+  char buf[24] = {0};
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buf, sizeof(buf), pos, "%lu", column_id))) {
+  } else if (OB_FAIL(set_ai_meta_field(11, ObString(pos, buf)))) {
+  }
+  return ret;
+}
+
+uint64_t ObColumnSchemaV2::get_ai_column_request_column_id() const
+{
+  uint64_t ret = OB_INVALID_ID;
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 11, field);
+    if (!field.empty()) {
+      ret = strtoull(field.ptr(), nullptr, 10);
+    }
+  }
+  return ret;
+}
+
+int ObColumnSchemaV2::set_ai_column_result_spec_column_id(uint64_t column_id)
+{
+  int ret = OB_SUCCESS;
+  char buf[24] = {0};
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buf, sizeof(buf), pos, "%lu", column_id))) {
+  } else if (OB_FAIL(set_ai_meta_field(12, ObString(pos, buf)))) {
+  }
+  return ret;
+}
+
+uint64_t ObColumnSchemaV2::get_ai_column_result_spec_column_id() const
+{
+  uint64_t ret = OB_INVALID_ID;
+  ObString meta;
+  ObString field;
+  if (OB_SUCCESS == get_ai_meta_str(meta)) {
+    get_ai_meta_field(meta, 12, field);
+    if (!field.empty()) {
+      ret = strtoull(field.ptr(), nullptr, 10);
+    }
+  }
+  return ret;
 }
 
 int ObColumnSchemaV2::convert_column_id(const hash::ObHashMap<uint64_t, uint64_t> &column_id_map)

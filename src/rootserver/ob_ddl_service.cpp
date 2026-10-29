@@ -1391,6 +1391,9 @@ int ObDDLService::create_tables_in_trans(const bool if_not_exist,
                                                      trans,
                                                      0 == i ? &tmp_ddl_stmt_str : NULL,
                                                      i == table_schemas.count() - 1))) {
+        } else if (!table_schema.is_view_table()
+                   && OB_FAIL(sync_ai_column_metadata(
+                        table_schema, table_schema.get_table_id()))) {
         } else if (table_schema.is_view_table() && dep_infos != nullptr && 0 == i) {
           for (int64_t i = 0 ; OB_SUCC(ret) && i < dep_infos->count(); ++i) {
             ObDependencyInfo dep;
@@ -8252,7 +8255,7 @@ int ObDDLService::add_ai_column_hidden_columns_(
     gen_column.set_table_id(new_table_schema.get_table_id());
     gen_column.set_column_id(new_table_schema.get_max_used_column_id() + 1);
     gen_column.set_data_type(ObIntType);
-    gen_column.set_nullable(false);
+    gen_column.set_nullable(true);
     gen_column.set_is_hidden(true);
     gen_column.set_charset_type(CHARSET_BINARY);
     gen_column.set_collation_type(CS_TYPE_BINARY);
@@ -8276,7 +8279,7 @@ int ObDDLService::add_ai_column_hidden_columns_(
   status_column.set_table_id(new_table_schema.get_table_id());
   status_column.set_column_id(new_table_schema.get_max_used_column_id() + 1);
   status_column.set_data_type(ObIntType);
-  status_column.set_nullable(false);
+  status_column.set_nullable(true);
   status_column.set_is_hidden(true);
   status_column.set_charset_type(CHARSET_BINARY);
   status_column.set_collation_type(CS_TYPE_BINARY);
@@ -8301,6 +8304,56 @@ int ObDDLService::add_ai_column_hidden_columns_(
     } else if (OB_FAIL(ai_column.set_ai_column_gen_column_id(gen_column_id))) {
     } else if (OB_FAIL(ai_column.set_ai_column_status_column_id(
                          status_column.get_column_id()))) {
+    }
+  }
+  for (int64_t hidden_idx = 0; OB_SUCC(ret) && hidden_idx < 2; ++hidden_idx) {
+    ObColumnSchemaV2 hidden_column;
+    hidden_column.set_table_id(new_table_schema.get_table_id());
+    hidden_column.set_column_id(new_table_schema.get_max_used_column_id() + 1);
+    hidden_column.set_data_type(ObIntType);
+    hidden_column.set_nullable(true);
+    hidden_column.set_is_hidden(true);
+    hidden_column.set_charset_type(CHARSET_BINARY);
+    hidden_column.set_collation_type(CS_TYPE_BINARY);
+    char hidden_name[OB_MAX_COLUMN_NAME_LENGTH] = {0};
+    int64_t hidden_name_pos = 0;
+    const char *prefix = 0 == hidden_idx
+        ? "__ai_request_%lu" : "__ai_result_spec_%lu";
+    if (OB_FAIL(databuff_printf(hidden_name, sizeof(hidden_name), hidden_name_pos,
+                                prefix, ai_column.get_column_id()))) {
+    } else if (OB_FAIL(hidden_column.set_column_name(
+                 ObString(hidden_name_pos, hidden_name)))) {
+    } else if (OB_FAIL(hidden_column.set_orig_default_value(zero_value))) {
+    } else if (OB_FAIL(hidden_column.set_cur_default_value(zero_value, false))) {
+    } else if (OB_FAIL(new_table_schema.add_column(hidden_column))) {
+    } else {
+      new_table_schema.set_max_used_column_id(hidden_column.get_column_id());
+      if (update_inner_table
+          && OB_FAIL(ddl_operator->insert_single_column(*trans,
+                                                        new_table_schema,
+                                                        hidden_column))) {
+      } else if (0 == hidden_idx
+                 && OB_FAIL(ai_column.set_ai_column_request_column_id(
+                      hidden_column.get_column_id()))) {
+      } else if (1 == hidden_idx
+                 && OB_FAIL(ai_column.set_ai_column_result_spec_column_id(
+                      hidden_column.get_column_id()))) {
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ObColumnSchemaV2 *persisted_ai_column =
+        new_table_schema.get_column_schema(ai_column.get_column_id());
+    if (OB_ISNULL(persisted_ai_column)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(persisted_ai_column->set_ai_column_gen_column_id(
+                         gen_column_id))) {
+    } else if (OB_FAIL(persisted_ai_column->set_ai_column_status_column_id(
+                         status_column.get_column_id()))) {
+    } else if (OB_FAIL(persisted_ai_column->set_ai_column_request_column_id(
+                         ai_column.get_ai_column_request_column_id()))) {
+    } else if (OB_FAIL(persisted_ai_column->set_ai_column_result_spec_column_id(
+                         ai_column.get_ai_column_result_spec_column_id()))) {
     }
   }
   return ret;

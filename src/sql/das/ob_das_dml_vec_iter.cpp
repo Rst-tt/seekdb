@@ -51,7 +51,24 @@ int ObVecIndexDMLIterator::generate_domain_rows(const ObChunkDatumStore::StoredR
     if (OB_FAIL(get_vector_index_column_idxs(vec_id_idx, type_idx, vector_idx))) {
     }
     for (int i = 0; OB_SUCC(ret) && i < row_cnt; i++) {
-      if (!is_update_ && OB_FAIL(get_vec_data(store_row, vec_id_idx, vector_idx, vec_id, vector))) {
+      const IntFixedArray *row_projector = is_update_
+          ? (is_old_row_ ? &das_ctdef_->old_row_projector_
+                         : &das_ctdef_->new_row_projector_)
+          : row_projector_;
+      bool is_null_vector = false;
+      if (is_update && OB_NOT_NULL(row_projector)
+          && vector_idx >= 0 && vector_idx < row_projector->count()) {
+        const int64_t projected_vector_idx = row_projector->at(vector_idx);
+        is_null_vector = projected_vector_idx >= 0
+            && projected_vector_idx < store_row->cnt_
+            && store_row->cells()[projected_vector_idx].is_null();
+      }
+      if (is_null_vector) {
+        if (is_update) {
+          is_old_row_ = !is_old_row_;
+        }
+        continue;
+      } else if (!is_update_ && OB_FAIL(get_vec_data(store_row, vec_id_idx, vector_idx, vec_id, vector))) {
       } else if (is_update_ && OB_FAIL(get_vec_data_for_update(store_row, vec_id_idx, vector_idx, vec_id, vector))) {
       } else if (OB_FAIL(generate_vec_delta_buff_row(allocator_, store_row, vec_id_idx, type_idx, vector_idx, vec_id, vector, rows_))) {
       } else if (is_update) {

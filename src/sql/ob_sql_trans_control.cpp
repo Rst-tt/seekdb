@@ -1009,7 +1009,7 @@ int ObSqlTransControl::end_stmt(ObExecContext &exec_ctx, const bool rollback, co
              KPC(session),
              K(exec_ctx.get_errcode()));
   }
-  if (OB_NOT_NULL(session)) {
+  if (OB_NOT_NULL(session) && !ObSQLUtils::is_nested_sql(&exec_ctx)) {
     session->get_trans_result().reset();
   }
   data_plane::end_lock_wait_request();

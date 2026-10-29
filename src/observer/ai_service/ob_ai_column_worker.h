@@ -49,6 +49,11 @@ public:
 private:
   void run_();
   int process_once_();
+  int process_ai_task_group_(uint64_t table_id,
+                             int64_t request_id,
+                             int64_t generation,
+                             const common::ObString &rowkey_predicate,
+                             common::ObIAllocator &allocator);
   int process_table_(const share::schema::ObTableSchema &table_schema);
 
 private:

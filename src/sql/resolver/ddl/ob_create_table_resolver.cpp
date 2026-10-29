@@ -746,7 +746,7 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
               gen_col.set_table_id(table_schema.get_table_id());
               gen_col.set_column_id(gen_column_id());
               gen_col.set_data_type(ObIntType);
-              gen_col.set_nullable(false);
+              gen_col.set_nullable(true);
               gen_col.set_is_hidden(true);
               gen_col.set_charset_type(CHARSET_BINARY);
               gen_col.set_collation_type(CS_TYPE_BINARY);
@@ -765,7 +765,7 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
             status_col.set_table_id(table_schema.get_table_id());
             status_col.set_column_id(gen_column_id());
             status_col.set_data_type(ObIntType);
-            status_col.set_nullable(false);
+            status_col.set_nullable(true);
             status_col.set_is_hidden(true);
             status_col.set_charset_type(CHARSET_BINARY);
             status_col.set_collation_type(CS_TYPE_BINARY);
@@ -783,6 +783,37 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
               } else if (OB_FAIL(column.set_ai_column_status_column_id(status_col.get_column_id()))) {
               } else if (OB_FAIL(column.set_ai_column_gen_column_id(ai_gen_column_id))) {
               } else if (OB_FAIL(ai_hidden_cols.push_back(status_col))) {
+              }
+            }
+            for (int64_t hidden_idx = 0; OB_SUCC(ret) && hidden_idx < 2; ++hidden_idx) {
+              ObColumnSchemaV2 hidden_col;
+              hidden_col.set_table_id(table_schema.get_table_id());
+              hidden_col.set_column_id(gen_column_id());
+              hidden_col.set_data_type(ObIntType);
+              hidden_col.set_nullable(true);
+              hidden_col.set_is_hidden(true);
+              hidden_col.set_charset_type(CHARSET_BINARY);
+              hidden_col.set_collation_type(CS_TYPE_BINARY);
+              char hidden_name[OB_MAX_COLUMN_NAME_LENGTH] = {0};
+              int64_t hidden_pos = 0;
+              const char *prefix = 0 == hidden_idx ? "__ai_request_%lu" : "__ai_result_spec_%lu";
+              if (OB_FAIL(databuff_printf(hidden_name, sizeof(hidden_name), hidden_pos,
+                                          prefix, column.get_column_id()))) {
+              } else if (OB_FAIL(hidden_col.set_column_name(
+                           ObString(static_cast<int32_t>(hidden_pos), hidden_name)))) {
+              } else {
+                ObObj hidden_default;
+                hidden_default.set_int(0);
+                if (OB_FAIL(hidden_col.set_orig_default_value(hidden_default))) {
+                } else if (OB_FAIL(hidden_col.set_cur_default_value(hidden_default, false))) {
+                } else if (0 == hidden_idx
+                           && OB_FAIL(column.set_ai_column_request_column_id(
+                                hidden_col.get_column_id()))) {
+                } else if (1 == hidden_idx
+                           && OB_FAIL(column.set_ai_column_result_spec_column_id(
+                                hidden_col.get_column_id()))) {
+                } else if (OB_FAIL(ai_hidden_cols.push_back(hidden_col))) {
+                }
               }
             }
           }
@@ -1344,6 +1375,12 @@ int ObCreateTableResolver::resolve_table_elements_from_select(const ParseNode &p
           }
         }
       }
+    }
+
+    if (OB_SUCC(ret) && !session_info_->is_inner()
+        && OB_INVALID_ID != table_schema.get_table_id()
+        && OB_FAIL(sync_ai_column_metadata(table_schema,
+                                           table_schema.get_table_id()))) {
     }
   }
   return ret;

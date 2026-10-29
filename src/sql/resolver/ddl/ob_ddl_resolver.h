@@ -40,6 +40,8 @@ namespace sql
 {
 typedef common::hash::ObPlacementHashSet<share::schema::ObColumnNameHashWrapper, common::OB_MAX_COLUMN_NUMBER> ObReducedVisibleColSet;
 typedef common::hash::ObPlacementHashSet<share::schema::ObPartitionNameHashWrapper, common::OB_MAX_EXTENDED_PARTITION_NUM> ObPartitionNameSet;
+int sync_ai_column_metadata(const share::schema::ObTableSchema &table_schema,
+                            uint64_t table_id);
 struct PartitionInfo
 {
   share::schema::ObPartitionLevel part_level_;

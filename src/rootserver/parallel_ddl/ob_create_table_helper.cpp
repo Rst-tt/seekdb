@@ -26,6 +26,7 @@
 #include "query/vector/ob_vector_index_util.h"
 #include "sql/resolver/ob_resolver_utils.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
+#include "sql/resolver/ddl/ob_ddl_resolver.h"
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -878,6 +879,10 @@ int ObCreateTableHelper::clean_on_fail_commit_()
 int ObCreateTableHelper::operation_before_commit_() {
   int ret = OB_SUCCESS;
   if (OB_FAIL(check_inner_stat_())) {
+  } else if (!new_tables_.empty()
+             && !new_tables_.at(0).is_view_table()
+             && OB_FAIL(sql::sync_ai_column_metadata(
+                  new_tables_.at(0), new_tables_.at(0).get_table_id()))) {
   }
   return ret;
 }

@@ -219,6 +219,8 @@ OB_INLINE int ObTableInsertOp::insert_row_to_das()
       ++ins_rtdef.cur_row_num_;
       if (OB_FAIL(ObDMLService::init_heap_table_pk_for_ins(ins_ctdef, eval_ctx_))) {
       } else if (OB_FAIL(ObDMLService::process_insert_row(ins_ctdef, ins_rtdef, *this, is_skipped))) {
+        LOG_WARN("process insert row failed for ai column table", KR(ret),
+                 K(ins_ctdef.das_base_ctdef_.table_id_));
       } else if (OB_UNLIKELY(is_skipped)) {
         break;
       } else if (OB_FAIL(calc_tablet_loc(ins_ctdef, ins_rtdef, tablet_loc))) {
@@ -226,6 +228,10 @@ OB_INLINE int ObTableInsertOp::insert_row_to_das()
                                                                 tablet_loc->tablet_id_,
                                                                 eval_ctx_))) {
       } else if (OB_FAIL(ObDMLService::insert_row(ins_ctdef, ins_rtdef, tablet_loc, dml_rtctx_, modify_row.new_row_))) {
+        LOG_WARN("insert row failed for ai column table", KR(ret),
+                 K(ins_ctdef.das_base_ctdef_.table_id_), KPC(modify_row.new_row_));
+      } else if (OB_FAIL(process_ai_column_tasks(
+                     modify_row, tablet_loc->loc_meta_->ref_table_id_))) {
       } else if (need_after_row_process(ins_ctdef) && OB_FAIL(dml_modify_rows_.push_back(modify_row))) {
       }
       if (OB_FAIL(ret)) {

@@ -148,7 +148,6 @@ int ObVariableSetResolver::resolve(const ParseNode &parse_tree)
             }
             if (OB_SUCC(ret)) {
               session_info_->set_ai_column_strict_read(strict_read);
-              continue;
             }
           }
           if (OB_FAIL(ret)) {

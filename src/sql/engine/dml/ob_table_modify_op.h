@@ -18,6 +18,7 @@
 #define OCEANBASE_SQL_ENGINE_DML_OB_TABLE_MODIFY_OP_
 
 #include "sql/engine/ob_operator.h"
+#include "lib/string/ob_sql_string.h"
 #include "sql/engine/dml/ob_dml_ctx_define.h"
 #include "sql/session/ob_inner_sql_connection.h"
 #include "sql/engine/ob_exec_context.h"
@@ -232,6 +233,10 @@ public:
   int execute_write(const char *sql);
   int execute_read(const char *sql, common::ObMySQLProxy::MySQLResult &res);
   int check_stack();
+  int process_ai_column_tasks(struct ObDMLModifyRowNode &row,
+                              const uint64_t table_id);
+  int queue_ai_column_task_sql(const char *sql, const int64_t length);
+  int flush_ai_column_task_sql();
   bool is_nested_session() { return ObSQLUtils::is_nested_sql(&ctx_); }
   bool is_fk_nested_session() { return ObSQLUtils::is_fk_nested_sql(&ctx_); }
   bool need_foreign_key_checks() { return need_foreign_key_check_; }
@@ -313,6 +318,8 @@ public:
   ObDMLModifyRowsList dml_modify_rows_;
   ObSEArray<ObForeignKeyChecker *, 4> fk_checkers_;
   ObChunkDatumStore::ShadowStoredRow last_store_row_;
+  common::ObSqlString ai_column_task_sql_;
+  ObSEArray<int64_t, 4> ai_column_task_sql_offsets_;
 private:
   ObSQLSessionInfo::StmtSavedValue *saved_session_;
   char saved_session_buf_[sizeof(ObSQLSessionInfo::StmtSavedValue)] __attribute__((aligned (16)));;

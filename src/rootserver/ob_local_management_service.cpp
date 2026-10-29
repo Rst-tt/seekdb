@@ -27,6 +27,8 @@
 #include "share/rc/ob_server_runtime.h"
 
 #include "share/ob_global_stat_proxy.h"
+#include "common/mysqlclient/ob_mysql_proxy.h"
+#include "lib/string/ob_sql_string.h"
 #include "share/ob_share_util.h"
 #include "share/ob_timezone_mgr.h"
 #include "share/ob_version_parser.h"
@@ -674,6 +676,92 @@ int ObLocalManagementService::parallel_create_table(const ObCreateTableArg &arg,
   return ret;
 }
 
+static int append_ai_sql_string(ObSqlString &sql, const ObString &value)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(sql.append("'"))) {
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < value.length(); ++i) {
+      if ('\'' == value[i]) {
+        ret = sql.append("''", 2);
+      } else {
+        ret = sql.append(value.ptr() + i, 1);
+      }
+    }
+    if (OB_SUCC(ret)) {
+      ret = sql.append("'");
+    }
+  }
+  return ret;
+}
+
+static int sync_ai_column_metadata(const ObTableSchema &table_schema,
+                                   uint64_t table_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_NOT_INIT;
+  }
+  for (ObTableSchema::const_column_iterator iter = table_schema.column_begin();
+       OB_SUCC(ret) && iter != table_schema.column_end(); ++iter) {
+    const ObColumnSchemaV2 *column = *iter;
+    if (OB_ISNULL(column)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (!column->is_ai_column()) {
+      continue;
+    } else {
+      ObSqlString sql;
+      ObString expr = column->get_ai_column_expr();
+      ObString normalized;
+      ObSqlString normalized_buf;
+      if (column->is_json()) {
+        normalized_buf.append(expr.ptr(), expr.length());
+        normalized_buf.append(" Return exactly one valid JSON value.");
+        normalized = normalized_buf.string();
+      } else if (ob_is_integer_type(column->get_data_type())) {
+        normalized_buf.append(expr.ptr(), expr.length());
+        normalized_buf.append(" Return a base-10 integer.");
+        normalized = normalized_buf.string();
+      } else {
+        normalized = expr;
+      }
+      if (OB_FAIL(sql.append_fmt(
+              "REPLACE INTO oceanbase.__all_ai_column (table_id, column_id, column_name, "
+              "normalized_expr, max_retries, sync_mode, state_column_id, request_column_id, "
+              "result_spec_column_id, dependency_columns, complete_model, complete_prompt, "
+              "complete_config, embed_model, embed_input, embed_dimension) VALUES (%lu,%lu,",
+              table_id, column->get_column_id()))) {
+      } else if (OB_FAIL(append_ai_sql_string(sql, column->get_column_name_str()))) {
+      } else if (OB_FAIL(sql.append(","))) {
+      } else if (OB_FAIL(append_ai_sql_string(sql, normalized))) {
+      } else if (OB_FAIL(sql.append_fmt(",%ld,'async',%lu,%lu,%lu,",
+                                        column->get_ai_column_max_retries(),
+                                        column->get_ai_column_status_column_id(),
+                                        column->get_ai_column_request_column_id(),
+                                        column->get_ai_column_result_spec_column_id()))) {
+      } else if (OB_FAIL(append_ai_sql_string(sql, column->get_ai_column_dep_names()))) {
+      } else if (OB_FAIL(sql.append(","))) {
+      } else if (OB_FAIL(append_ai_sql_string(sql, column->get_ai_column_complete_model()))) {
+      } else if (OB_FAIL(sql.append(","))) {
+      } else if (OB_FAIL(append_ai_sql_string(sql, column->get_ai_column_complete_prompt()))) {
+      } else if (OB_FAIL(sql.append(","))) {
+      } else if (OB_FAIL(append_ai_sql_string(sql, column->get_ai_column_complete_config()))) {
+      } else if (OB_FAIL(sql.append(","))) {
+      } else if (OB_FAIL(append_ai_sql_string(sql, column->get_ai_column_embed_model()))) {
+      } else if (OB_FAIL(sql.append(","))) {
+      } else if (OB_FAIL(append_ai_sql_string(sql, column->get_ai_column_embed_input()))) {
+      } else if (OB_FAIL(sql.append_fmt(",%ld)", column->get_ai_column_embed_dimension()))) {
+      } else {
+        int64_t affected_rows = 0;
+        if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
+          LOG_WARN("sync ai column metadata failed", K(ret), K(sql));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObLocalManagementService::create_table(const ObCreateTableArg &arg, ObCreateTableRes &res)
 {
   int64_t begin_time = ObTimeUtility::current_time();
@@ -692,6 +780,19 @@ int ObLocalManagementService::create_table(const ObCreateTableArg &arg, ObCreate
     ObCreateTableHelper create_table_helper(schema_service_, arg, res, nullptr/*external trans*/, false /*is_parallel*/);
     if (OB_FAIL(create_table_helper.init(ddl_service_))) {
     } else if (OB_FAIL(create_table_helper.execute())) {
+    }
+  }
+  if (OB_SUCC(ret) && !arg.schema_.is_view_table()
+      && OB_NOT_NULL(GCTX.schema_service_)) {
+    ObSchemaGetterGuard guard;
+    const ObTableSchema *created_table_schema = NULL;
+    int64_t saved_schema_version = res.schema_version_;
+    if (OB_FAIL(GCTX.schema_service_->retry_get_schema_guard(
+                  res.schema_version_, res.table_id_, guard, saved_schema_version))) {
+    } else if (OB_FAIL(guard.get_table_schema(res.table_id_, created_table_schema))) {
+    } else if (OB_NOT_NULL(created_table_schema)
+               && OB_FAIL(sync_ai_column_metadata(*created_table_schema,
+                                                  res.table_id_))) {
     }
   }
   int64_t cost = ObTimeUtility::current_time() - begin_time;
@@ -1045,6 +1146,9 @@ int ObLocalManagementService::alter_table(const obcall::ObAlterTableArg &arg, ob
       }
     } else if (OB_FAIL(ddl_service_.alter_table(nonconst_arg, res))) {
     } else {
+      if (OB_FAIL(sync_ai_column_metadata(nonconst_arg.alter_table_schema_,
+                                          nonconst_arg.alter_table_schema_.get_table_id()))) {
+      }
       const ObSimpleTableSchemaV2 *simple_table_schema = NULL;
       // there are multiple DDL except alter table, ctas, comment on, eg.
       // but only alter_table specify table_id, so if no table_id, it indicates DDL is not alter table, skip.
