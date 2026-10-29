@@ -7,7 +7,7 @@
 
 | 场景 | 冻结基线 | 本方案 | 加速比 |
 | --- | --- | --- | --- |
-| CAGRA 构图（250K×128，SIFT 同构，nq=200） | 43,534.2 ms | 17,517.2 ms | **2.49x** |
+| CAGRA 构图（250K×128，SIFT 同构，nq=200） | 43,534.2 ms | 16,012.7 – 17,517.2 ms | **2.49x – 2.72x** |
 | CAGRA 构图（250K×256，Hidden 同构） | 42,919.5 ms | 42,919.5 ms（参数不动） | 1.00x |
 | 单条 top-10 查询（250K×128，200 条） | 42.7 ms | 41.3 ms | 1.00x（中性，见 §5） |
 
@@ -175,6 +175,21 @@ python3 tools/hipvs_bridge/bench_e2e.py --port 2881 --n 250000 --dim 128 --base 
 | 更大 `itopk`（1024/4096） | `RAFT failure: itopk_size cannot be larger than 512` | cuVS 硬限制（`search_single_cta.cuh:139`、`search_plan.cuh:459`） |
 | 仅降 `intermediate_graph_degree`（224 等） | 128 维 Recall@10 掉到 0.8130 | 参数敏感性异常，判定不可靠 |
 
+### 4.6 提交版本的最终复验（用仓库里的源码现编、不带任何环境变量）
+
+```
+$ ./build/bench_build --n 250000 --dim 128 --nq 200 --topk 100 --base data/sift250k.fvecs
+[seekdb_cuvs] resources_create 0.0 ms
+[seekdb_cuvs] params build_algo=2 graph_degree=128 intermediate=192 niter=35
+[seekdb_cuvs] cagra_build_fp32 16012.6 ms
+{"tag":"final_default","n":250000,"dim":128,"nq":200,"topk":100,
+ "build_ms":16012.7,"search_ms":42.1,"recall@10":0.9965,"recall@100":0.9866}
+```
+
+即 2.72x（基线 43,534.2 ms），Recall@10 −0.0035、@100 −0.0021，均在 0.005 门槛内；
+同一份源码在不同轮次测得 2.49x–2.72x，与共享 GPU 的轮次波动一致。
+日志同时印证了 dim-aware 默认值确实生效（`intermediate=192 niter=35`）。
+
 ## 5. 查询侧
 
 * `itopk_size` 上限 512、`internal_topk` 上限 1024，因此不能用「更小的构图 + 更大的搜索束」补召回；
@@ -221,7 +236,7 @@ python3 tools/hipvs_bridge/bench_e2e.py --port 2881 --n 250000 --dim 128 --base 
 | 桥接层编译 | ✅ 零警告 | `gcc/g++ -Wall -Wextra -Istub` 与节点上 `hipcc -shared -O2` 均通过（产物 18,2xx B） |
 | 桥接层 GPU 构图/检索 | ✅ 实测通过 | `bench_build` 250K×128/256，GPU CAGRA 构图 + 检索，Recall 见 §4 |
 | 桥接层序列化/反序列化 | ✅ 实测通过 | `t_persist`：`serialize rc=0`、`deserialize ok`、`search2 same=1`、形状不匹配被拒（`EXIT=0`） |
-| 调优默认值（dim-aware） | ✅ 实测通过 | 从仓库源码重编后不带 env 直接跑：250K×128 `build_ms 17,517.2`、`0.9980/0.9855` |
+| 调优默认值（dim-aware） | ✅ 实测通过 | 从仓库源码重编后不带 env 直接跑：250K×128 `build_ms 16,012.7`、`0.9965/0.9866`，日志 `intermediate=192 niter=35` |
 | 内核代码 | ✅ 未改 | 与冻结 commit 逐字节一致 |
 | 官方口径端到端 DDL | ⏳ 未跑完 | 2 小时实例在 seekdb 编译到 61% 时被回收；构图层已覆盖 DDL 的关键路径（CAGRA 构图） |
 
