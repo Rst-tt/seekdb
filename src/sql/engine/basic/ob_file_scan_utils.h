@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -78,7 +80,7 @@ public:
     if (format == ObFileSqlFormat::CSV) {
       ret = infer_csv_schema_(allocator, path, options, columns, error_msg);
     } else if (format == ObFileSqlFormat::JSONL || format == ObFileSqlFormat::NDJSON) {
-      ret = infer_jsonl_schema_(allocator, path, columns, error_msg);
+      ret = infer_jsonl_schema_(allocator, path, options, columns, error_msg);
     } else if (format == ObFileSqlFormat::PARQUET) {
       ret = infer_parquet_schema_(allocator, path, columns, error_msg);
     } else {
@@ -104,7 +106,8 @@ private:
 
   static bool is_null_value_(const std::string &value, const common::ObString &null_text)
   {
-    return !null_text.empty() && null_text.length() == static_cast<int32_t>(value.size()) &&
+    return !null_text.empty() &&
+           null_text.length() == static_cast<int32_t>(value.size()) &&
            memcmp(null_text.ptr(), value.data(), value.size()) == 0;
   }
 
@@ -122,7 +125,10 @@ private:
         return false;
       }
     }
-    return true;
+    errno = 0;
+    char *end = nullptr;
+    strtoll(value.c_str(), &end, 10);
+    return end != value.c_str() && *end == '\0' && ERANGE != errno;
   }
 
   static bool is_double_(const std::string &value)
@@ -140,35 +146,67 @@ private:
     return value == "true" || value == "false" || value == "TRUE" || value == "FALSE";
   }
 
-  static bool is_date_(const std::string &value)
+  static int parse_two_digits_(const std::string &value, size_t pos)
   {
-    if (value.size() != 10 || value[4] != '-' || value[7] != '-') {
+    if (pos + 1 >= value.size() ||
+        value[pos] < '0' || value[pos] > '9' ||
+        value[pos + 1] < '0' || value[pos + 1] > '9') {
+      return -1;
+    }
+    return (value[pos] - '0') * 10 + (value[pos + 1] - '0');
+  }
+
+  static bool is_leap_year_(int year)
+  {
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  }
+
+  static bool is_valid_date_part_(const std::string &value, size_t pos)
+  {
+    if (pos + 10 > value.size() ||
+        value[pos + 4] != '-' || value[pos + 7] != '-') {
       return false;
     }
-    for (int i = 0; i < 10; ++i) {
-      if (i == 4 || i == 7) {
-        continue;
-      }
-      if (value[i] < '0' || value[i] > '9') {
+    int year = 0;
+    for (size_t i = 0; i < 4; ++i) {
+      char ch = value[pos + i];
+      if (ch < '0' || ch > '9') {
         return false;
       }
+      year = year * 10 + (ch - '0');
     }
-    return true;
+    int month = parse_two_digits_(value, pos + 5);
+    int day = parse_two_digits_(value, pos + 8);
+    if (year <= 0 || month < 1 || month > 12 || day < 1) {
+      return false;
+    }
+    static const int DAYS[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    int max_day = DAYS[month - 1];
+    if (2 == month && is_leap_year_(year)) {
+      max_day = 29;
+    }
+    return day <= max_day;
+  }
+
+  static bool is_date_(const std::string &value)
+  {
+    return value.size() == 10 && is_valid_date_part_(value, 0);
   }
 
   static bool is_datetime_(const std::string &value)
   {
-    if (value.size() != 19 || value[4] != '-' || value[7] != '-' ||
-        value[10] != ' ' || value[13] != ':' || value[16] != ':') {
+    if (value.size() != 19 || (value[10] != ' ' && value[10] != 'T') ||
+        value[13] != ':' || value[16] != ':' ||
+        !is_valid_date_part_(value, 0)) {
       return false;
     }
-    for (int i = 0; i < 19; ++i) {
-      if (i == 4 || i == 7 || i == 10 || i == 13 || i == 16) {
-        continue;
-      }
-      if (value[i] < '0' || value[i] > '9') {
-        return false;
-      }
+    int hour = parse_two_digits_(value, 11);
+    int minute = parse_two_digits_(value, 14);
+    int second = parse_two_digits_(value, 17);
+    if (hour < 0 || hour > 23 ||
+        minute < 0 || minute > 59 ||
+        second < 0 || second > 59) {
+      return false;
     }
     return true;
   }
@@ -232,6 +270,37 @@ private:
     }
   }
 
+  static bool file_column_name_equal_(const std::string &lhs,
+                                      const std::string &rhs)
+  {
+    bool equal = lhs.size() == rhs.size();
+    for (size_t i = 0; equal && i < lhs.size(); ++i) {
+      equal = std::tolower(static_cast<unsigned char>(lhs[i])) ==
+              std::tolower(static_cast<unsigned char>(rhs[i]));
+    }
+    return equal;
+  }
+
+  static void make_unique_csv_column_names_(std::vector<std::string> &names)
+  {
+    for (size_t i = 0; i < names.size(); ++i) {
+      std::string base = names[i];
+      std::string candidate = base;
+      int64_t suffix = 2;
+      bool duplicated = true;
+      while (duplicated) {
+        duplicated = false;
+        for (size_t j = 0; !duplicated && j < i; ++j) {
+          duplicated = file_column_name_equal_(names[j], candidate);
+        }
+        if (duplicated) {
+          candidate = base + "__" + std::to_string(suffix++);
+        }
+      }
+      names[i] = candidate;
+    }
+  }
+
   static int infer_csv_schema_(common::ObIAllocator &allocator,
                                const common::ObString &path,
                                const ObFileSqlOptions &options,
@@ -245,13 +314,21 @@ private:
       error_msg = common::ObString("failed to open csv file");
       return ret;
     }
+    struct stat file_stat;
+    if (0 == stat(std::string(path.ptr(), path.length()).c_str(), &file_stat) &&
+        options.max_file_size_ > 0 && file_stat.st_size > options.max_file_size_) {
+      ret = common::OB_SIZE_OVERFLOW;
+      error_msg = common::ObString("csv file exceeds max_file_size");
+      return ret;
+    }
 
     std::string content((std::istreambuf_iterator<char>(in)),
                         std::istreambuf_iterator<char>());
     in.close();
 
     std::vector<std::vector<std::string>> records;
-    if (OB_FAIL(parse_csv_records_(content, options, records))) {
+    std::vector<std::vector<bool>> quoted_records;
+    if (OB_FAIL(parse_csv_records_(content, options, records, quoted_records))) {
       error_msg = common::ObString("malformed csv record");
       return ret;
     }
@@ -273,8 +350,12 @@ private:
     for (int64_t i = 0; i < column_count; ++i) {
       names[i] = options.header_ ? records[0][i] : "c" + std::to_string(i + 1);
     }
+    make_unique_csv_column_names_(names);
 
     const int64_t first_data_row = options.header_ ? 1 : 0;
+    std::vector<bool> nullable(column_count, 0 < first_data_row &&
+                                             first_data_row >=
+                                                 static_cast<int64_t>(records.size()));
     for (int64_t r = first_data_row; OB_SUCC(ret) && r < static_cast<int64_t>(records.size()); ++r) {
       if (records[r].size() != static_cast<size_t>(column_count)) {
         ret = common::OB_INVALID_DATA;
@@ -282,7 +363,14 @@ private:
         break;
       }
       for (int64_t c = 0; c < column_count; ++c) {
-        types[c] = merge_type_(types[c], infer_type_(records[r][c], options.null_text_));
+        const std::string &value = records[r][c];
+        const bool is_null = !quoted_records[r][c] &&
+                             (value.empty() || is_null_value_(value, options.null_text_));
+        if (is_null) {
+          nullable[c] = true;
+        } else {
+          types[c] = merge_type_(types[c], infer_type_(value, options.null_text_));
+        }
       }
     }
 
@@ -293,7 +381,7 @@ private:
       } else {
         column.name_ = name;
         column.type_ = to_obj_type_(types[c]);
-        column.nullable_ = true;
+        column.nullable_ = nullable[c];
         column.precision_ = -1;
         column.scale_ = -1;
         if (OB_FAIL(columns.push_back(column))) {
@@ -305,6 +393,7 @@ private:
 
   static int infer_jsonl_schema_(common::ObIAllocator &allocator,
                                  const common::ObString &path,
+                                 const ObFileSqlOptions &options,
                                  common::ObArray<ObFileSqlColumn> &columns,
                                  common::ObString &error_msg)
   {
@@ -313,6 +402,13 @@ private:
     if (!in.is_open()) {
       ret = common::OB_FILE_NOT_EXIST;
       error_msg = common::ObString("failed to open jsonl file");
+      return ret;
+    }
+    struct stat file_stat;
+    if (0 == stat(std::string(path.ptr(), path.length()).c_str(), &file_stat) &&
+        options.max_file_size_ > 0 && file_stat.st_size > options.max_file_size_) {
+      ret = common::OB_SIZE_OVERFLOW;
+      error_msg = common::ObString("jsonl file exceeds max_file_size");
       return ret;
     }
 
@@ -358,6 +454,9 @@ private:
           next = InferType::UNKNOWN;
         } else if (value.IsInt64()) {
           next = InferType::BIGINT;
+        } else if (value.IsUint64()) {
+          next = value.GetUint64() <= static_cast<uint64_t>(INT64_MAX)
+                     ? InferType::BIGINT : InferType::DOUBLE;
         } else if (value.IsDouble()) {
           next = InferType::DOUBLE;
         } else if (value.IsBool()) {
@@ -370,6 +469,10 @@ private:
     }
     in.close();
 
+    if (OB_SUCC(ret) && names.empty()) {
+      ret = common::OB_INVALID_DATA;
+      error_msg = common::ObString("jsonl file is empty");
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < static_cast<int64_t>(names.size()); ++i) {
       ObFileSqlColumn column;
       common::ObString name;
@@ -775,12 +878,28 @@ private:
 
   static int parse_csv_records_(const std::string &content,
                                 const ObFileSqlOptions &options,
-                                std::vector<std::vector<std::string>> &records)
+                                std::vector<std::vector<std::string>> &records,
+                                std::vector<std::vector<bool>> &quoted_records)
   {
     int ret = common::OB_SUCCESS;
     std::vector<std::string> record;
+    std::vector<bool> quoted_record;
     std::string field;
     bool in_quotes = false;
+    bool field_quoted = false;
+    auto finish_field = [&]() {
+      record.push_back(field);
+      quoted_record.push_back(field_quoted);
+      field.clear();
+      field_quoted = false;
+    };
+    auto finish_record = [&]() {
+      finish_field();
+      records.push_back(record);
+      quoted_records.push_back(quoted_record);
+      record.clear();
+      quoted_record.clear();
+    };
     const int64_t len = content.size();
     for (int64_t i = 0; i < len; ++i) {
       char ch = content[i];
@@ -797,25 +916,25 @@ private:
         }
       } else if (ch == options.quote_) {
         in_quotes = true;
+        field_quoted = true;
       } else if (ch == options.delimiter_) {
-        record.push_back(field);
-        field.clear();
+        finish_field();
       } else if (ch == '\n') {
-        record.push_back(field);
-        field.clear();
-        records.push_back(record);
-        record.clear();
+        finish_record();
       } else if (ch == '\r') {
         if (i + 1 < len && content[i + 1] == '\n') {
           continue;
+        } else {
+          finish_record();
         }
       } else {
         field.push_back(ch);
       }
     }
-    if (!field.empty() || !record.empty()) {
-      record.push_back(field);
-      records.push_back(record);
+    if (in_quotes) {
+      ret = common::OB_INVALID_DATA;
+    } else if (!field.empty() || !record.empty() || !quoted_record.empty() || field_quoted) {
+      finish_record();
     }
     return ret;
   }
@@ -864,6 +983,9 @@ public:
         eof_ = true;
       }
     }
+    if (OB_SUCC(ret) && options_.header_ && OB_FAIL(skip_header_())) {
+      eof_ = true;
+    }
     return ret;
   }
 
@@ -874,13 +996,24 @@ public:
     in_.seekg(0, std::ios::beg);
     peek_ = -1;
     eof_ = !in_.is_open();
+    row_count_ = 0;
+    if (OB_SUCC(ret) && !eof_ && options_.header_ && OB_FAIL(skip_header_())) {
+      eof_ = true;
+    }
     return ret;
   }
 
   int next(std::vector<std::string> &record)
   {
+    std::vector<bool> nulls;
+    return next(record, nulls);
+  }
+
+  int next(std::vector<std::string> &record, std::vector<bool> &nulls)
+  {
     int ret = common::OB_SUCCESS;
     record.clear();
+    nulls.clear();
     if (eof_) {
       ret = common::OB_ITER_END;
     } else if (options_.max_rows_ > 0 && row_count_ >= options_.max_rows_) {
@@ -889,10 +1022,27 @@ public:
     } else {
       std::string field;
       bool in_quotes = false;
+      bool field_quoted = false;
       bool any = false;
+      std::vector<bool> quoted;
       while (true) {
         char ch = '\0';
-        if (OB_FAIL(next_char_(ch))) {
+        int next_ret = next_char_(ch);
+        if (common::OB_SUCCESS != next_ret) {
+          if (common::OB_ITER_END == next_ret) {
+            if (in_quotes) {
+              ret = common::OB_INVALID_DATA;
+            } else if (any || !field.empty() || !record.empty()) {
+              record.push_back(field);
+              quoted.push_back(field_quoted);
+              ret = common::OB_SUCCESS;
+            } else {
+              ret = common::OB_ITER_END;
+              eof_ = true;
+            }
+          } else {
+            ret = next_ret;
+          }
           break;
         }
         any = true;
@@ -913,11 +1063,15 @@ public:
           }
         } else if (ch == options_.quote_) {
           in_quotes = true;
+          field_quoted = true;
         } else if (ch == options_.delimiter_) {
           record.push_back(field);
+          quoted.push_back(field_quoted);
           field.clear();
+          field_quoted = false;
         } else if (ch == '\n') {
           record.push_back(field);
+          quoted.push_back(field_quoted);
           break;
         } else if (ch == '\r') {
           char next = '\0';
@@ -926,17 +1080,17 @@ public:
             unget_char_(next);
           }
           record.push_back(field);
+          quoted.push_back(field_quoted);
           break;
         } else {
           field.push_back(ch);
         }
       }
-      if (OB_FAIL(ret)) {
-        if (common::OB_ITER_END == ret && !any) {
-          eof_ = true;
-        }
-      }
       if (OB_SUCC(ret)) {
+        nulls.resize(record.size(), false);
+        for (int64_t i = 0; i < static_cast<int64_t>(record.size()); ++i) {
+          nulls[i] = is_null_field_(record[i], quoted[i]);
+        }
         ++row_count_;
       }
     }
@@ -944,6 +1098,29 @@ public:
   }
 
 private:
+  bool is_null_field_(const std::string &value, bool quoted) const
+  {
+    return !quoted &&
+           (value.empty() ||
+            (!options_.null_text_.empty() &&
+             options_.null_text_.length() == static_cast<int32_t>(value.size()) &&
+             memcmp(options_.null_text_.ptr(), value.data(), value.size()) == 0));
+  }
+
+  int skip_header_()
+  {
+    int ret = common::OB_SUCCESS;
+    std::vector<std::string> header;
+    ret = next(header);
+    if (common::OB_ITER_END == ret) {
+      eof_ = true;
+      ret = common::OB_SUCCESS;
+    } else if (OB_SUCC(ret)) {
+      row_count_ = 0;
+    }
+    return ret;
+  }
+
   int next_char_(char &ch)
   {
     int ret = common::OB_SUCCESS;
@@ -1001,7 +1178,9 @@ public:
         stat_valid_(false),
         stat_info_(),
         path_(),
-        row_count_(0)
+        row_count_(0),
+        max_file_size_(0),
+        max_rows_(0)
   {
   }
 
@@ -1012,13 +1191,15 @@ public:
     }
   }
 
-  int open(const common::ObString &path)
+  int open(const common::ObString &path, const ObFileSqlOptions &options)
   {
     int ret = common::OB_SUCCESS;
     columns_.clear();
     eof_ = false;
     stat_valid_ = false;
     row_count_ = 0;
+    max_file_size_ = options.max_file_size_;
+    max_rows_ = options.max_rows_;
     in_.clear();
     std::string path_str(path.ptr(), path.length());
     path_ = path_str;
@@ -1028,12 +1209,20 @@ public:
       eof_ = true;
     } else if (0 == stat(path_str.c_str(), &stat_info_)) {
       stat_valid_ = true;
-      if (stat_info_.st_size > 1024LL * 1024LL * 1024LL) {
+      if (max_file_size_ > 0 && stat_info_.st_size > max_file_size_) {
         ret = common::OB_SIZE_OVERFLOW;
         eof_ = true;
       }
-    } else if (OB_FAIL(collect_columns_())) {
-    } else if (OB_FAIL(reset())) {
+    } else {
+      ret = common::OB_IO_ERROR;
+      eof_ = true;
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(collect_columns_())) {
+        eof_ = true;
+      } else if (OB_FAIL(reset())) {
+        eof_ = true;
+      }
     }
     return ret;
   }
@@ -1044,6 +1233,7 @@ public:
     in_.clear();
     in_.seekg(0, std::ios::beg);
     eof_ = !in_.is_open();
+    row_count_ = 0;
     return ret;
   }
 
@@ -1059,7 +1249,7 @@ public:
     nulls.assign(columns_.size(), true);
     if (eof_) {
       ret = common::OB_ITER_END;
-    } else if (row_count_ >= 10000000) {
+    } else if (max_rows_ > 0 && row_count_ >= max_rows_) {
       ret = common::OB_SIZE_OVERFLOW;
     } else if (stat_valid_ && OB_FAIL(check_unchanged_())) {
     } else {
@@ -1090,6 +1280,16 @@ public:
           } else if (it->value.IsInt64()) {
             nulls[i] = false;
             values[i] = std::to_string(it->value.GetInt64());
+          } else if (it->value.IsUint64()) {
+            nulls[i] = false;
+            uint64_t value = it->value.GetUint64();
+            if (value <= static_cast<uint64_t>(INT64_MAX)) {
+              values[i] = std::to_string(static_cast<int64_t>(value));
+            } else {
+              char buf[32] = {0};
+              snprintf(buf, sizeof(buf), "%.17g", static_cast<double>(value));
+              values[i] = buf;
+            }
           } else if (it->value.IsDouble()) {
             nulls[i] = false;
             values[i] = std::to_string(it->value.GetDouble());
@@ -1167,6 +1367,8 @@ private:
   struct stat stat_info_;
   std::string path_;
   int64_t row_count_;
+  int64_t max_file_size_;
+  int64_t max_rows_;
 };
 
 inline bool snappy_read_varint_(const uint8_t *input,

@@ -25,6 +25,7 @@
 #include "sql/plan_cache/ob_pcv_set.h"
 #include "sql/ob_sql_init.h"
 #include "sql/resolver/ob_resolver.h"
+#include "sql/resolver/ddl/ob_explain_stmt.h"
 #include "sql/resolver/cmd/ob_variable_set_stmt.h"
 #include "sql/resolver/cmd/ob_call_procedure_stmt.h"
 #include "sql/resolver/cmd/ob_anonymous_block_stmt.h"
@@ -38,6 +39,8 @@
 #include "sql/monitor/show_trace/ob_show_trace.h"
 #include "sql/optimizer/ob_optimizer.h"
 #include "share/rc/ob_server_runtime.h"
+#include <cctype>
+#include <strings.h>
 
 namespace oceanbase
 {
@@ -53,6 +56,29 @@ namespace sql
 
 const int64_t ObSql::max_error_length = 80;
 const int64_t ObSql::SQL_MEM_SIZE_LIMIT = 1024 * 1024 * 64;
+
+static bool sql_contains_file_table_function(const common::ObString &sql)
+{
+  static const char *FUNC_NAMES[] = {
+    "read_csv", "read_json", "read_ndjson", "read_parquet", "glob"
+  };
+  bool found = false;
+  for (int64_t i = 0; !found && i < sql.length(); ++i) {
+    for (int64_t j = 0; !found && j < static_cast<int64_t>(ARRAYSIZEOF(FUNC_NAMES)); ++j) {
+      const int64_t name_len = static_cast<int64_t>(strlen(FUNC_NAMES[j]));
+      if (i + name_len <= sql.length() &&
+          0 == strncasecmp(sql.ptr() + i, FUNC_NAMES[j], name_len)) {
+        bool left_ok = i == 0 || !(isalnum(static_cast<unsigned char>(sql.ptr()[i - 1])) ||
+                                   '_' == sql.ptr()[i - 1]);
+        bool right_ok = i + name_len == sql.length() ||
+                        !(isalnum(static_cast<unsigned char>(sql.ptr()[i + name_len])) ||
+                          '_' == sql.ptr()[i + name_len]);
+        found = left_ok && right_ok;
+      }
+    }
+  }
+  return found;
+}
 
 int ObSql::init(common::ObOptStatManager *opt_stat_mgr,
                 common::ObITabletScan *vt_partition_service,
@@ -270,19 +296,32 @@ int ObSql::fill_result_set(ObResultSet &result_set,
       break;
     }
     case stmt::T_EXPLAIN: {
-      ObString tname = ObString::make_string("explain_table");
-      ObString cname = ObString::make_string("Query Plan");
-      field.tname_ = tname;
-      field.org_tname_ = tname;
-      field.cname_ = cname;
-      field.org_cname_ = cname;
-      field.type_.set_type(ObVarcharType);
-      field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
-      field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
-      field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
-      field.type_.set_varchar(type_name);
-      if (OB_FAIL(result_set.reserve_field_columns(1))) {
-      } else if (OB_FAIL(result_set.add_field_column(field))) {
+      static const char *DESCRIBE_COLUMN_NAMES[] = {
+        "column_name", "column_type", "null", "key", "default", "extra"
+      };
+      ObExplainStmt *explain_stmt = static_cast<ObExplainStmt *>(&basic_stmt);
+      const bool is_describe = explain_stmt->is_describe();
+      const int64_t field_count = is_describe ? 6 : 1;
+      ObString tname = ObString::make_string(is_describe ? "describe_table" : "explain_table");
+      if (OB_FAIL(result_set.reserve_field_columns(field_count))) {
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < field_count; ++i) {
+        ObString cname = is_describe ? ObString::make_string(DESCRIBE_COLUMN_NAMES[i])
+                                     : ObString::make_string("Query Plan");
+        field.tname_ = tname;
+        field.org_tname_ = tname;
+        field.cname_ = cname;
+        field.org_cname_ = cname;
+        field.type_.set_type(ObVarcharType);
+        field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
+        field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+        field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
+        field.type_.set_varchar(type_name);
+        if (OB_FAIL(result_set.add_field_column(field))) {
+        } else {
+          field.cname_.assign(NULL, 0);
+          field.org_cname_.assign(NULL, 0);
+        }
       }
       break;
     }
@@ -3559,7 +3598,8 @@ OB_NOINLINE int ObSql::handle_physical_plan(const ObString &trimed_stmt,
   bool use_plan_cache = session.get_local_ob_enable_plan_cache();
   // record whether needs to do parameterization at this time,
   // if exact mode is on, not do parameterizaiton
-  bool is_enable_transform_tree = !session.get_enable_exact_mode();
+  bool is_enable_transform_tree = !session.get_enable_exact_mode() &&
+                                  !sql_contains_file_table_function(trimed_stmt);
   // Reset these two flags before reparsing to avoid issues with non-idempotency of these parameters after regenerating the plan due to previous plan cache lookup operations
   pc_ctx.not_param_index_.reset();
   pc_ctx.neg_param_index_.reset();

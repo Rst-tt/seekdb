@@ -376,6 +376,7 @@ SQL_INTERFACE_CLOSURE_HEADERS = [
     "resolver/ddl/ob_partitioned_stmt.h",
     "resolver/ddl/ob_table_stmt.h",
     "resolver/dml/ob_column_namespace_checker.h",
+    "resolver/dml/ob_copy_resolver.h",
     "resolver/dml/ob_del_upd_resolver.h",
     "resolver/dml/ob_del_upd_stmt.h",
     "resolver/dml/ob_delete_stmt.h",

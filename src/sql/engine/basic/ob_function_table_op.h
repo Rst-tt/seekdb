@@ -86,6 +86,7 @@ private:
   pl::ObPLCollection *value_table_;
   ObFileCsvReader csv_reader_;
   std::vector<std::string> csv_record_;
+  std::vector<bool> csv_nulls_;
   ObFileJsonlReader jsonl_reader_;
   std::vector<std::string> jsonl_record_;
   std::vector<bool> jsonl_nulls_;

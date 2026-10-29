@@ -115,7 +115,7 @@ int ObFunctionTableOp::inner_open()
         ret = csv_reader_.open(path_datum->get_string(), options);
       } else if (static_cast<int64_t>(ObFileSqlFormat::JSONL) == MY_SPEC.file_format_ ||
                  static_cast<int64_t>(ObFileSqlFormat::NDJSON) == MY_SPEC.file_format_) {
-        ret = jsonl_reader_.open(path_datum->get_string());
+        ret = jsonl_reader_.open(path_datum->get_string(), options);
       } else if (static_cast<int64_t>(ObFileSqlFormat::PARQUET) == MY_SPEC.file_format_) {
         ret = parquet_reader_.open(path_datum->get_string(), options);
       } else if (static_cast<int64_t>(ObFileSqlFormat::GLOB) == MY_SPEC.file_format_) {
@@ -147,9 +147,17 @@ int ObFunctionTableOp::inner_rescan()
       value_table_ = NULL;
       already_calc_ = false;
     }
-    if (OB_SUCC(ret) && MY_SPEC.is_file_scan_ &&
-        static_cast<int64_t>(ObFileSqlFormat::PARQUET) == MY_SPEC.file_format_) {
-      ret = parquet_reader_.reset();
+    if (OB_SUCC(ret) && MY_SPEC.is_file_scan_) {
+      if (static_cast<int64_t>(ObFileSqlFormat::CSV) == MY_SPEC.file_format_) {
+        ret = csv_reader_.reset();
+      } else if (static_cast<int64_t>(ObFileSqlFormat::JSONL) == MY_SPEC.file_format_ ||
+                 static_cast<int64_t>(ObFileSqlFormat::NDJSON) == MY_SPEC.file_format_) {
+        ret = jsonl_reader_.reset();
+      } else if (static_cast<int64_t>(ObFileSqlFormat::PARQUET) == MY_SPEC.file_format_) {
+        ret = parquet_reader_.reset();
+      } else if (static_cast<int64_t>(ObFileSqlFormat::GLOB) == MY_SPEC.file_format_) {
+        glob_idx_ = 0;
+      }
     }
   }
   return ret;
@@ -221,8 +229,10 @@ int ObFunctionTableOp::inner_get_next_row_file_scan()
     std::vector<bool> *nulls = nullptr;
     if (static_cast<int64_t>(ObFileSqlFormat::CSV) == MY_SPEC.file_format_) {
       csv_record_.clear();
+      csv_nulls_.clear();
       record = &csv_record_;
-      if (OB_FAIL(csv_reader_.next(csv_record_))) {
+      nulls = &csv_nulls_;
+      if (OB_FAIL(csv_reader_.next(csv_record_, csv_nulls_))) {
         if (OB_ITER_END != ret) {
         }
       }

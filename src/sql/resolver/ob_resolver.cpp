@@ -22,6 +22,7 @@
 #include "sql/resolver/dml/ob_insert_resolver.h"
 #include "sql/resolver/dml/ob_update_resolver.h"
 #include "sql/resolver/dml/ob_delete_resolver.h"
+#include "sql/resolver/dml/ob_copy_resolver.h"
 #include "sql/resolver/tcl/ob_start_trans_resolver.h"
 #include "sql/resolver/tcl/ob_end_trans_resolver.h"
 #include "sql/resolver/prepare/ob_prepare_resolver.h"
@@ -236,6 +237,10 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_SELECT: {
         REGISTER_SELECT_STMT_RESOLVER(Select);
+        break;
+      }
+      case T_COPY: {
+        REGISTER_STMT_RESOLVER(Copy);
         break;
       }
       case T_INSERT: {

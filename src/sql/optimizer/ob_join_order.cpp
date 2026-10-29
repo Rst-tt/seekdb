@@ -8571,20 +8571,31 @@ int ObJoinOrder::generate_function_table_paths()
             const ObRawExpr *header_expr = function_table_expr->get_param_expr(1);
             const ObRawExpr *delimiter_expr = function_table_expr->get_param_expr(2);
             const ObRawExpr *quote_expr = function_table_expr->get_param_expr(3);
-            if (OB_NOT_NULL(header_expr) && header_expr->is_static_const_expr()) {
+            if (OB_NOT_NULL(header_expr) && header_expr->is_const_raw_expr()) {
               const ObConstRawExpr *const_expr = static_cast<const ObConstRawExpr *>(header_expr);
-              func_path->file_header_ = const_expr->get_value().get_int();
+              const ObObj &value = const_expr->get_value();
+              const ObObj &param = const_expr->get_param();
+              const ObObj &actual_value = value.is_unknown() ? param : value;
+              if (actual_value.is_int()) {
+                func_path->file_header_ = actual_value.get_int();
+              }
             }
-            if (OB_NOT_NULL(delimiter_expr) && delimiter_expr->is_static_const_expr()) {
+            if (OB_NOT_NULL(delimiter_expr) && delimiter_expr->is_const_raw_expr()) {
               const ObConstRawExpr *const_expr = static_cast<const ObConstRawExpr *>(delimiter_expr);
-              ObString delimiter = const_expr->get_value().get_string();
+              const ObObj &value = const_expr->get_value();
+              const ObObj &param = const_expr->get_param();
+              const ObObj &actual_value = value.is_unknown() ? param : value;
+              ObString delimiter = actual_value.is_string_type() ? actual_value.get_string() : ObString();
               if (!delimiter.empty()) {
                 func_path->file_delimiter_ = static_cast<unsigned char>(delimiter[0]);
               }
             }
-            if (OB_NOT_NULL(quote_expr) && quote_expr->is_static_const_expr()) {
+            if (OB_NOT_NULL(quote_expr) && quote_expr->is_const_raw_expr()) {
               const ObConstRawExpr *const_expr = static_cast<const ObConstRawExpr *>(quote_expr);
-              ObString quote = const_expr->get_value().get_string();
+              const ObObj &value = const_expr->get_value();
+              const ObObj &param = const_expr->get_param();
+              const ObObj &actual_value = value.is_unknown() ? param : value;
+              ObString quote = actual_value.is_string_type() ? actual_value.get_string() : ObString();
               if (!quote.empty()) {
                 func_path->file_quote_ = static_cast<unsigned char>(quote[0]);
               }
