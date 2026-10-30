@@ -25,6 +25,10 @@ int   seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
 void  seekdb_cuvs_free(void* handle);
 int seekdb_cuvs_serialize(void* handle, const char* filename);
 void* seekdb_cuvs_deserialize(const char* filename, long n, long dim);
+
+/* Version tag of the loaded bridge library. Lets the benchmark harness prove
+ * which .so is actually resident before it trusts any measurement. */
+const char* seekdb_cuvs_tag(void);
 #ifdef __cplusplus
 }
 #endif
