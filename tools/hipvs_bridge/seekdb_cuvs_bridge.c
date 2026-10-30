@@ -277,10 +277,14 @@ static void sk_set_dset(DLManagedTensor* d, void* data, int bits, int dev,
  * niter 100 for every dataset, which is far more work than the graph needs.
  * Measured on real 250K point datasets with real query sets (see
  * CONTEST_REPORT.md, nearest-neighbour ground truth computed on the CPU):
- *   dim 128 (SIFT, 250K x 128, 500 real queries): stock 54.0 s keeps recall
- *            1.0000 / 1.0000; 128/96/16 builds in 6.87 s (7.9x) and still gets
- *            1.0000 / 0.9999, i.e. a 0.0001 drop, two orders of magnitude
- *            inside the 0.005 gate.  Even 128/64/10 stays at 1.0000 / 1.0000.
+ *   dim 128 (SIFT, 250K x 128, 500 real queries, sift_q2k): stock 128/256/100
+ *            builds in 42.0 s and searches 500 queries in 50.3 ms with recall
+ *            1.0000 / 1.0000; 96/64/16 builds in 6.70 s (6.3x) and searches in
+ *            41.3 ms; 64/48/16 builds in 5.78 s (7.3x) and searches in 40.9 ms,
+ *            both keeping recall 1.0000 / 1.0000.  Going further (niter 12 or
+ *            less) still looks good on the build clock but the query side
+ *            degrades (search 120 ms for 500 queries), which would endanger the
+ *            "query throughput >= 90% of baseline" gate, so niter stays at 16.
  *   dim 256: every cut we measured (niter 30/50/70, intermediate 192/224,
  *            IVF-PQ with refinement) loses 0.008-0.05 recall@10 on both random
  *            and real 256-d data, so wide vectors keep the stock parameters.
@@ -290,8 +294,8 @@ static void sk_set_dset(DLManagedTensor* d, void* data, int bits, int dev,
 static void sk_tune_defaults(long dim, int* deg, int* inter, int* niter)
 {
   if (dim <= 160) {
-    *deg = 128;
-    *inter = 96;
+    *deg = 64;
+    *inter = 48;
     *niter = 16;
   } else {
     *deg = 128;
