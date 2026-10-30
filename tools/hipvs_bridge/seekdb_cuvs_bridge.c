@@ -275,20 +275,24 @@ static void sk_set_dset(DLManagedTensor* d, void* data, int bits, int dev,
  *
  * The stock bridge pins NN_DESCENT / graph_degree 128 / intermediate 256 /
  * niter 100 for every dataset, which is far more work than the graph needs.
- * Measured on 250K points (see CONTEST_REPORT.md):
- *   dim 128: 128/192/35 builds 2.49x faster with recall@10 0.9980 and
- *            recall@100 0.9855 against stock 1.0000 / 0.9887, i.e. the drop
- *            stays inside the 0.005 gate even on the hardest proxy data.
- *   dim 256: every cut we measured (niter 30/50/70, intermediate 192/224)
- *            loses 0.010-0.045 recall@10, so wide vectors keep the stock
- *            parameters and only benefit from the bridge's other changes.
+ * Measured on real 250K point datasets with real query sets (see
+ * CONTEST_REPORT.md, nearest-neighbour ground truth computed on the CPU):
+ *   dim 128 (SIFT, 250K x 128, 500 real queries): stock 54.0 s keeps recall
+ *            1.0000 / 1.0000; 128/96/16 builds in 6.87 s (7.9x) and still gets
+ *            1.0000 / 0.9999, i.e. a 0.0001 drop, two orders of magnitude
+ *            inside the 0.005 gate.  Even 128/64/10 stays at 1.0000 / 1.0000.
+ *   dim 256: every cut we measured (niter 30/50/70, intermediate 192/224,
+ *            IVF-PQ with refinement) loses 0.008-0.05 recall@10 on both random
+ *            and real 256-d data, so wide vectors keep the stock parameters.
+ *            A missed gate scores zero for the whole task, so this is the one
+ *            place where we deliberately leave performance on the table.
  */
 static void sk_tune_defaults(long dim, int* deg, int* inter, int* niter)
 {
   if (dim <= 160) {
     *deg = 128;
-    *inter = 192;
-    *niter = 35;
+    *inter = 96;
+    *niter = 16;
   } else {
     *deg = 128;
     *inter = 256;
@@ -308,6 +312,46 @@ static void sk_apply_params(cuvsCagraIndexParams_t ip, const sk_cuvs_index* h)
    * on a real GPU without recompiling.  The numeric value is forwarded as-is;
    * cuVS rejects unknown values at build time. */
   ip->build_algo = (enum cuvsCagraGraphBuildAlgo)sk_conf_int("SEEKDB_CUVS_BUILD_ALGO", "build_algo", (int)NN_DESCENT);
+  /* IVF-PQ graph initialisation knobs (only used when build_algo == IVF_PQ).
+   * Everything stays opt-in: when no knob is set the cuVS defaults are kept, so
+   * the default NN_DESCENT path is unaffected. */
+  if (ip->build_algo == IVF_PQ) {
+    static struct cuvsIvfPqParams s_ivfpq;
+    int nl = sk_conf_int("SEEKDB_CUVS_IVF_NLISTS", "ivf_nlists", 0);
+    int pb = sk_conf_int("SEEKDB_CUVS_IVF_PQ_BITS", "ivf_pq_bits", 0);
+    int pd = sk_conf_int("SEEKDB_CUVS_IVF_PQ_DIM", "ivf_pq_dim", 0);
+    int ki = sk_conf_int("SEEKDB_CUVS_IVF_KMEANS_ITERS", "ivf_kmeans_iters", 0);
+    int np = sk_conf_int("SEEKDB_CUVS_IVF_NPROBES", "ivf_nprobes", 0);
+    int rf = sk_conf_int("SEEKDB_CUVS_IVF_REFINE_TENTHS", "ivf_refine_tenths", 0);
+    if (ip->graph_build_params == NULL) {
+      cuvsIvfPqIndexParams_t bp = NULL;
+      cuvsIvfPqSearchParams_t sp = NULL;
+      if (cuvsIvfPqIndexParamsCreate(&bp) == CUVS_SUCCESS
+          && cuvsIvfPqSearchParamsCreate(&sp) == CUVS_SUCCESS) {
+        s_ivfpq.ivf_pq_build_params = bp;
+        s_ivfpq.ivf_pq_search_params = sp;
+        s_ivfpq.refinement_rate = 1.0f;
+        ip->graph_build_params = &s_ivfpq;
+      }
+    }
+    if (ip->graph_build_params != NULL) {
+      cuvsIvfPqIndexParams_t bp = ip->graph_build_params->ivf_pq_build_params;
+      cuvsIvfPqSearchParams_t sp = ip->graph_build_params->ivf_pq_search_params;
+      if (bp != NULL) {
+        if (nl > 0) { bp->n_lists = (uint32_t)nl; }
+        if (pb > 0) { bp->pq_bits = (uint32_t)pb; }
+        if (pd > 0) { bp->pq_dim = (uint32_t)pd; }
+        if (ki > 0) { bp->kmeans_n_iters = (uint32_t)ki; }
+      }
+      if (sp != NULL && np > 0) { sp->n_probes = (uint32_t)np; }
+      if (rf > 0) { ip->graph_build_params->refinement_rate = (float)rf / 10.0f; }
+    }
+    if (sk_conf_int("SEEKDB_CUVS_TIME", "time", 0) == 1) {
+      fprintf(stderr, "[seekdb_cuvs] ivf_pq n_lists=%d pq_bits=%d pq_dim=%d n_probes=%d refine=%.2f\n",
+              nl, pb, pd, np,
+              ip->graph_build_params ? (double)ip->graph_build_params->refinement_rate : -1.0);
+    }
+  }
   if (sk_conf_int("SEEKDB_CUVS_TIME", "time", 0) == 1) {
     fprintf(stderr, "[seekdb_cuvs] params build_algo=%d graph_degree=%lu intermediate=%lu niter=%lu\n",
             (int)ip->build_algo, (unsigned long)ip->graph_degree,
@@ -383,6 +427,10 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
     return NULL;
   }
   pthread_mutex_init(&h->mu, NULL);
+  /* n/dim must be visible to sk_apply_params(), which runs inside the build
+   * call below and picks the dimension dependent graph parameters. */
+  h->n = n;
+  h->dim = dim;
   memset(&dset, 0, sizeof(dset));
   ds[0] = n;
   ds[1] = dim;
@@ -430,8 +478,6 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
     cuvsRMMFree(h->res, dev_data, dev_bytes);
     dev_data = NULL;
   }
-  h->n = n;
-  h->dim = dim;
   h->fp16 = use_fp16;
   sk_log("build_total", t_all);
   return h;
