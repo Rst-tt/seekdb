@@ -176,18 +176,66 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
     const ObString &src_str = src.get_word().get_string();
+    const unsigned char *ptr = reinterpret_cast<const unsigned char *>(src_str.ptr());
+    const int64_t str_len = src_str.length();
     bool ascii_only = true;
     bool need_lower = false;
-    for (int64_t i = 0; i < src_str.length(); ++i) {
-      const unsigned char c = static_cast<unsigned char>(src_str.ptr()[i]);
-      if (c >= 0x80) {
-        ascii_only = false;
-        break;
-      } else if (c >= 'A' && c <= 'Z') {
-        need_lower = true;
+    // Words made only of ASCII and caseless east asian characters cannot change
+    // under any case conversion, so they can be returned as is. That saves the
+    // per-word allocation plus a no-op ObCharset::tolower on the indexing hot
+    // path, where most tokens of a chinese document are pure CJK. Anything that
+    // may carry case (two byte latin/greek/cyrillic, four byte scripts,
+    // fullwidth letters, or any byte we cannot prove caseless) falls back to the
+    // charset conversion, and so does every non utf8mb4 collation.
+    const bool is_utf8mb4 =
+        (ObCharset::charset_type_by_coll(word_meta_.get_collation_type()) == CHARSET_UTF8MB4);
+    if (is_utf8mb4) {
+      for (int64_t i = 0; i < str_len;) {
+        const unsigned char c = ptr[i];
+        if (c < 0x80) {
+          if (c >= 'A' && c <= 'Z') {
+            // Keep scanning: a later non-ASCII byte must still divert the word
+            // to the charset conversion path, so an early exit here would skip
+            // case folding for words like "CAFÉ".
+            need_lower = true;
+          }
+          ++i;
+        } else {
+          ascii_only = false;
+          // Three byte sequences are caseless only inside the CJK ideograph,
+          // kana, hangul and CJK punctuation blocks. Other three byte blocks
+          // such as fullwidth forms do carry case.
+          if (c >= 0xE0 && c <= 0xEF && i + 2 < str_len) {
+            const uint32_t code = ((static_cast<uint32_t>(c) & 0x0F) << 12)
+                                  | ((static_cast<uint32_t>(ptr[i + 1]) & 0x3F) << 6)
+                                  | (static_cast<uint32_t>(ptr[i + 2]) & 0x3F);
+            if ((code >= 0x3000 && code <= 0x9FFF) || (code >= 0xAC00 && code <= 0xD7AF)
+                || (code >= 0xF900 && code <= 0xFAFF) || (code >= 0x1100 && code <= 0x11FF)
+                || (code >= 0x3130 && code <= 0x318F)) {
+              i += 3;
+            } else {
+              need_lower = true;
+              break;
+            }
+          } else {
+            need_lower = true;
+            break;
+          }
+        }
+      }
+    } else {
+      // Other collations keep the original byte-wise scan so the ascii-only
+      // fast lowering path below behaves exactly as before.
+      for (int64_t i = 0; i < str_len; ++i) {
+        if (ptr[i] >= 0x80) {
+          ascii_only = false;
+          break;
+        } else if (ptr[i] >= 'A' && ptr[i] <= 'Z') {
+          need_lower = true;
+        }
       }
     }
-    if (ascii_only && !need_lower) {
+    if (!need_lower && (is_utf8mb4 || ascii_only)) {
       dst = src;
     } else if (ascii_only) {
       char *buf = static_cast<char *>(allocator_.alloc(src_str.length()));
@@ -236,20 +284,23 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
 int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
 {
   int ret = OB_SUCCESS;
-  int64_t word_count = 0;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
   } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
-    } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+    // Probe the map once and bump the counter in place. The previous version
+    // probed twice (get_refactored followed by set_refactored with overwrite),
+    // which hashed the key and compared it against the stored key twice for
+    // every token. Word hashing and comparison are collation aware, so they are
+    // among the most expensive operations on the indexing hot path. The word map
+    // belongs to a single segmenting thread, so updating the bucket value in
+    // place is safe.
+    int64_t *word_count = word_map_.get(word);
+    if (NULL != word_count) {
+      *word_count += word_freq;
+    } else if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
   }
   return ret;
