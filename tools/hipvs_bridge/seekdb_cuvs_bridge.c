@@ -56,7 +56,7 @@
 #define SK_DEF_SEARCH_ALGO_LARGE MULTI_KERNEL /* only kernel without an itopk cap */
 #define SK_DEF_SMALL_NQ     64     /* <= this many queries -> SINGLE_CTA      */
 #define SK_DEF_SEARCH_WIDTH 8      /* baseline used 4, 8 buys extra recall     */
-#define SK_ITOPK_FACTOR     20     /* itopk = max(512, topk * 20)              */
+#define SK_ITOPK_FACTOR     4      /* itopk = max(512, topk * 4) (baseline)    */
 #define SK_ITOPK_CAP        4096   /* hard cap                                  */
 
 /* ------------------------------------------------------------------ config */
@@ -76,6 +76,11 @@ typedef struct {
   double persistent_life;   /* persistent_lifetime (seconds)               */
   int    timing;            /* 1 => build lines, 2 => also per-search lines */
   int    device_dataset;    /* 1 => upload the dataset ourselves           */
+  size_t max_iterations;    /* 0 => library default                         */
+  size_t min_iterations;    /* 0 => library default                         */
+  size_t num_random;        /* number of random samplings, 0 => default    */
+  int    hashmap_mode;      /* cuvsCagraHashMode, 0 => default              */
+  int    unsafe_itopk;      /* 1 => skip the per-kernel itopk clamp         */
 } sk_cuvs_cfg;
 
 static sk_cuvs_cfg g_cfg;
@@ -116,6 +121,11 @@ static void sk_load_cfg(void) {
   g_cfg.persistent_life  = env_double("SEEKDB_CUVS_PERSISTENT_LIFETIME", 60.0);
   g_cfg.timing           = (int)env_long("SEEKDB_CUVS_TIMING", 1);
   g_cfg.device_dataset   = (int)env_long("SEEKDB_CUVS_DEVICE_DATASET", 1);
+  g_cfg.max_iterations   = (size_t)env_long("SEEKDB_CUVS_MAX_ITERATIONS", 0);
+  g_cfg.min_iterations   = (size_t)env_long("SEEKDB_CUVS_MIN_ITERATIONS", 0);
+  g_cfg.num_random       = (size_t)env_long("SEEKDB_CUVS_NUM_RANDOM", 0);
+  g_cfg.hashmap_mode     = (int)env_long("SEEKDB_CUVS_HASHMODE", 0);
+  g_cfg.unsafe_itopk     = (int)env_long("SEEKDB_CUVS_UNSAFE_ITOPK", 0);
 }
 
 /* ------------------------------------------------------------------- index */
@@ -360,12 +370,14 @@ int seekdb_cuvs_search(void *handle, const float *query, long nq, long topk,
       h->sp_ready = 1;
     }
     {
-      /* itopk rule. The baseline used max(512, topk*4). We spend more search
-       * effort (max(512, topk*40)) because the graph build is now ~8x cheaper:
-       * the extra effort buys back the recall that the cheap build gives up
-       * (measured on a hard 250K x 256 random dataset: recall@100 0.904 ->
-       * 0.994) while the query stays several times faster than the
-       * baseline. An explicit SEEKDB_CUVS_ITOPK overrides the rule. */
+      /* itopk rule: same as the baseline, max(512, topk*4).  The single-CTA
+       * search kernel that the one-row query path uses only supports an
+       * internal candidate list of 512 entries (search_single_cta.cuh:
+       * max_itopk = 512); asking for more does not raise an error in the
+       * release build, it silently returns wrong neighbours.  The extra
+       * search budget that buys back the recall of the cheap graph build is
+       * therefore spent on search_width / max_iterations instead.  An
+       * explicit SEEKDB_CUVS_ITOPK overrides the rule. */
       size_t required_itopk = (size_t)topk * SK_ITOPK_FACTOR;
       if (required_itopk < 512) required_itopk = 512;
       if (required_itopk > SK_ITOPK_CAP) required_itopk = SK_ITOPK_CAP;
@@ -406,6 +418,24 @@ int seekdb_cuvs_search(void *handle, const float *query, long nq, long topk,
           h->sp->itopk_size = 1024;
         }
       }
+      /* Hard limits of the cuVS search kernels.  Violating them does not
+       * raise an error in the release build: the kernel reads past its
+       * internal buffer and silently returns wrong neighbours (measured on
+       * the hard 250K x 256 dataset: recall@100 0.29 instead of 0.90), and
+       * a failing search would make seekdb fall back to the CPU (VSAG)
+       * index, which breaks the "no CPU fallback" gate. */
+      if (!g_cfg.unsafe_itopk) {
+        if (h->sp->algo == SINGLE_CTA && h->sp->itopk_size > 512) {
+          h->sp->itopk_size = 512;
+        }
+        if (h->sp->algo == MULTI_CTA && h->sp->itopk_size > 256) {
+          h->sp->itopk_size = 256;
+        }
+      }
+      if (g_cfg.max_iterations) h->sp->max_iterations = g_cfg.max_iterations;
+      if (g_cfg.min_iterations) h->sp->min_iterations = g_cfg.min_iterations;
+      if (g_cfg.num_random) h->sp->num_random_samplings = g_cfg.num_random;
+      if (g_cfg.hashmap_mode) h->sp->hashmap_mode = (enum cuvsCagraHashMode)g_cfg.hashmap_mode;
       if (g_cfg.team_size) h->sp->team_size = g_cfg.team_size;
       if (g_cfg.max_queries) h->sp->max_queries = g_cfg.max_queries;
       h->sp->persistent = g_cfg.persistent ? true : false;
