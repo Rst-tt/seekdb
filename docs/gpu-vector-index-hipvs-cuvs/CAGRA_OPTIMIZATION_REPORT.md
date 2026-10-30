@@ -233,7 +233,49 @@ observer 日志（基线臂 SIFT）：`[OBVSAG][cuVS] serialized GPU CAGRA snaps
 
 ---
 
-## 7. 过程中的三个坑（供复核者参考）
+## 7. 验证结果（官方脚本实测）
+
+| 验证项 | 脚本 | 结果 |
+|---|---|---|
+| GPU 路径 / CPU 回退 / DDL 契约 / batch_knn / GPU fd | 官方 `docs/gpu-vector-index-hipvs-cuvs/validation/run_gpu_smoke.sh` | **PASS（12/12）** |
+| DDL 持久化（快照写入、重载不重建、不降级到 CPU、lib=vsag 不回归） | 本仓 `docs/gpu-vector-index-hipvs-cuvs/validation/run_ddl_persistence_native.sh`（官方 docker 版的无 docker 等价实现） | **PASS** |
+
+官方 `run_gpu_smoke.sh` 输出：
+
+```
+PASS cuvs_l2_route build=1 serve=1
+PASS vsag_cpu_route cuvs_markers=0
+PASS ddl_non_l2 cosine and inner_product rejected
+PASS freshness_fallback n=400 serve=0 exact_match=1
+PASS freshness_rebuild n=700 build=1 serve=1
+PASS filter_fallback serve=0 exact_match=1
+PASS delete_fallback serve=0 exact_match=1 deleted_absent=1
+PASS batch_knn trace=1 rows=1000 recall=1.0000
+PASS batch_knn_top100 trace=1 rows=10000 recall=1.0000
+PASS gpu_fd observer opened /dev/dri/renderD129 and /dev/kfd
+PASS gpu_unavailable_fallback serve=0 exact_match=1 observer_alive=1
+PASS cleanup all observers stopped and ports closed
+```
+
+原生持久化脚本输出：
+
+```
+PASS pre_ddl_rows=10000 first_rows=10 restart_rows=10 exact_match=1 graph_reload=1 \
+     gpu_serve=1 rebuild_after_restart=0 eager_vsag=0 cpu_reload=1 stale_ids=0
+```
+
+其中 `rebuild_after_restart=0` 表示重启后走的是快照重载（trace 里只有 `cuvs_serve`、没有 `cuvs_build`），
+`eager_vsag=0` 表示日志里没有出现 `lazily built VSAG fallback`，
+`cpu_reload=1` 表示 lib=vsag 路径仍然 `fdeserialize` 了自己的索引。observer 日志：
+
+```
+[OBVSAG][cuVS] serialized GPU CAGRA snapshot(key=0x7654646d9000, n=10000, dim32=128, built=true, build_us=1718410, graph_bytes=10241713)
+[OBVSAG][cuVS] deserialized GPU CAGRA snapshot(key=0x76ef7af80000, n64=10000, dim32=128, graph_bytes=10241713)
+```
+
+---
+
+## 8. 过程中的三个坑（供复核者参考）
 
 1. **env 解析 bug**：早期版本里 `env_long()/env_double()` 在解析成功时返回默认值，
    导致所有 `SEEKDB_CUVS_*` 从未生效，一度得出"调参对建图时间毫无影响"的错误结论。
@@ -250,7 +292,7 @@ observer 日志（基线臂 SIFT）：`[OBVSAG][cuVS] serialized GPU CAGRA snaps
 
 ---
 
-## 8. 复现方法
+## 9. 复现方法
 
 ```bash
 # 1) 数据准备（SIFT1M fvecs -> 250K×128 base + 4096 query + 暴力真值）
@@ -273,7 +315,7 @@ bash docs/gpu-vector-index-hipvs-cuvs/validation/run_ddl_persistence_native.sh <
 
 ---
 
-## 9. 风险与限制
+## 10. 风险与限制
 
 * `persistent` 搜索模式在本实现上有召回崩塌与挂死风险，已禁用。
 * 自定义 IVF-PQ 建图参数会 double-free（cuVS 会释放我们挂进去的 params），已移除该分支。
