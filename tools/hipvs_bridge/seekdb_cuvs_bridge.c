@@ -1,33 +1,14 @@
 /* seekdb <-> hipVS bridge: plain-C CAGRA kNN; all cuVS/ROCm deps live here.
  *
- * Contest version (seekdb x AMD hipVS). The exported ABI is a superset of the
- * V5 baseline ABI, so src/oblib/lib/vector/ob_vsag_adaptor.cpp keeps working
- * unchanged and the win is entirely on the cuVS side:
+ * Contest build: adds (a) env-tunable CAGRA build parameters, (b) an optional
+ * FP16 dataset build path, (c) phase timers, so the same .so can be benchmarked
+ * without recompiling seekdb.
  *
- *  1) CAGRA build/search knobs are overridable at runtime through
- *     SEEKDB_CUVS_* environment variables; the defaults are the values that
- *     were measured to be the best trade-off on gfx1100 (ROCm 7.2.4,
- *     hipVS f96a663). Defaults therefore reproduce the tuned behaviour even
- *     when the evaluation harness runs the bridge with a clean environment.
- *
- *  2) The dataset is uploaded by this bridge through a pinned staging buffer
- *     and handed to cuVS as a *device* DLPack tensor, so cuVS does not copy
- *     the pageable host buffer a second time (122MB pageable H2D = 610ms,
- *     pinned = 5ms on this box).
- *
- *  3) Search buffers, pinned host staging areas and the cuVS search params
- *     object are allocated once per index and reused across calls; the
- *     baseline allocated and freed three device buffers plus a params object
- *     on every single query.
- *
- *  4) The small-batch search kernel is selected automatically: cuVS' AUTO
- *     choice is very slow for the one-row-at-a-time access pattern used by
- *     the evaluation queries (a single CTA per query), while SINGLE_CTA
- *     answers the same query ~6x faster with the same recall. Large batches
- *     keep the library default.
- *
- *  5) Each build prints one timing line so the DDL -> first-query window can
- *     be attributed to phases (upload vs CAGRA build).
+ *   SEEKDB_CUVS_FP16=1                 build/search with a float16 dataset
+ *   SEEKDB_CUVS_GRAPH_DEGREE=128       final graph degree
+ *   SEEKDB_CUVS_INTERMEDIATE_DEGREE=256 intermediate graph degree
+ *   SEEKDB_CUVS_NITER=100              nn-descent iterations
+ *   SEEKDB_CUVS_TIME=1                 print phase timings to stderr
  */
 #include "seekdb_cuvs_bridge.h"
 #include <cuvs/core/c_api.h>
@@ -41,511 +22,661 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 #include <time.h>
-
-#define SK_TAG "v5-tuned"
-
-/* Tuned defaults (gfx1100 / ROCm 7.2.4 / hipVS f96a663).
- *
- * Build: NN-descent with the baseline graph degree but 10x fewer iterations.
- *   The V5 baseline spends NN_DESCENT_NITER=100 rounds in the host side of
- *   the GNND loop (two nrow x degree device-to-host copies per round), which
- *   is ~95% of the end-to-end build window.  10 rounds keep the graph
- *   searchable and cost ~7s instead of ~44s.
- *
- * Search: MULTI_CTA with a large internal candidate list.
- *   The one-row query path of the evaluation is answered by cuVS'
- *   search_multi_cta kernel: it spreads ceildiv(itopk, 64) CTAs over the SMs
- *   of one query and therefore returns a much better neighbour list for the
- *   cheap (10 round) graph than the single-CTA kernel, which is limited to
- *   512 internal candidates (search_single_cta.cuh: max_itopk = 512).
- *   cuVS' AUTO mode resolves to MULTI_CTA as well because max_queries is 0
- *   (search_plan.cuh), MULTI_CTA is requested explicitly to stay
- *   deterministic. */
-#define SK_DEF_BUILD_ALGO   NN_DESCENT
-#define SK_DEF_GRAPH_DEGREE 128
-#define SK_DEF_INTER_DEGREE 128
-#define SK_DEF_NN_NITER     10
-#define SK_DEF_SEARCH_ALGO  MULTI_CTA
-#define SK_DEF_SEARCH_WIDTH 8      /* ignored by MULTI_CTA (it forces 1)      */
-#define SK_ITOPK_FACTOR     40     /* itopk = max(512, topk * 40)             */
-#define SK_ITOPK_CAP        4096   /* hard cap                                  */
-
-/* ------------------------------------------------------------------ config */
+#include <pthread.h>
 
 typedef struct {
-  int    build_algo;        /* cuvsCagraGraphBuildAlgo                     */
-  size_t graph_degree;      /* final graph degree                          */
-  size_t inter_degree;      /* intermediate graph degree                   */
-  size_t nn_niter;          /* NN-descent iterations                       */
-  size_t itopk;             /* 0 => keep baseline rule max(512, topk*4)    */
-  size_t search_width;      /* 0 => keep baseline rule (4)                 */
-  int    algo;              /* cuvsCagraSearchAlgo, 0 => auto by batch size */
-  size_t team_size;         /* 0 => auto                                   */
-  size_t max_queries;       /* 0 => auto                                   */
-  int    persistent;        /* use the persistent search kernel            */
-  double persistent_usage;  /* persistent_device_usage                     */
-  double persistent_life;   /* persistent_lifetime (seconds)               */
-  int    timing;            /* 1 => build lines, 2 => also per-search lines */
-  int    device_dataset;    /* 1 => upload the dataset ourselves           */
-  size_t max_iterations;    /* 0 => library default                         */
-  size_t min_iterations;    /* 0 => library default                         */
-  size_t num_random;        /* number of random samplings, 0 => default    */
-  int    hashmap_mode;      /* cuvsCagraHashMode, 0 => default              */
-  int    unsafe_itopk;      /* 1 => skip the per-kernel itopk clamp         */
-} sk_cuvs_cfg;
-
-static sk_cuvs_cfg g_cfg;
-
-static long env_long(const char *key, long dflt) {
-  const char *v = getenv(key);
-  if (!v || !*v) return dflt;
-  char *end = 0;
-  long r = strtol(v, &end, 10);
-  if (end == v) return dflt;   /* not a number -> keep the default */
-  return r;
-}
-
-static double env_double(const char *key, double dflt) {
-  const char *v = getenv(key);
-  if (!v || !*v) return dflt;
-  char *end = 0;
-  double r = strtod(v, &end);
-  if (end == v) return dflt;
-  return r;
-}
-
-static void sk_load_cfg(void) {
-  static int loaded = 0;
-  if (loaded) return;
-  loaded = 1;
-  g_cfg.build_algo       = (int)env_long("SEEKDB_CUVS_BUILD_ALGO", SK_DEF_BUILD_ALGO);
-  g_cfg.graph_degree     = (size_t)env_long("SEEKDB_CUVS_GRAPH_DEGREE", SK_DEF_GRAPH_DEGREE);
-  g_cfg.inter_degree     = (size_t)env_long("SEEKDB_CUVS_INTER_DEGREE", SK_DEF_INTER_DEGREE);
-  g_cfg.nn_niter         = (size_t)env_long("SEEKDB_CUVS_NN_NITER", SK_DEF_NN_NITER);
-  g_cfg.itopk            = (size_t)env_long("SEEKDB_CUVS_ITOPK", 0);
-  g_cfg.search_width     = (size_t)env_long("SEEKDB_CUVS_SEARCH_WIDTH", 0);
-  g_cfg.algo             = (int)env_long("SEEKDB_CUVS_ALGO", 0);
-  g_cfg.team_size        = (size_t)env_long("SEEKDB_CUVS_TEAM_SIZE", 0);
-  g_cfg.max_queries      = (size_t)env_long("SEEKDB_CUVS_MAX_QUERIES", 0);
-  g_cfg.persistent       = (int)env_long("SEEKDB_CUVS_PERSISTENT", 0);
-  g_cfg.persistent_usage = env_double("SEEKDB_CUVS_PERSISTENT_USAGE", 0.9);
-  g_cfg.persistent_life  = env_double("SEEKDB_CUVS_PERSISTENT_LIFETIME", 60.0);
-  g_cfg.timing           = (int)env_long("SEEKDB_CUVS_TIMING", 1);
-  g_cfg.device_dataset   = (int)env_long("SEEKDB_CUVS_DEVICE_DATASET", 1);
-  g_cfg.max_iterations   = (size_t)env_long("SEEKDB_CUVS_MAX_ITERATIONS", 0);
-  g_cfg.min_iterations   = (size_t)env_long("SEEKDB_CUVS_MIN_ITERATIONS", 0);
-  g_cfg.num_random       = (size_t)env_long("SEEKDB_CUVS_NUM_RANDOM", 0);
-  g_cfg.hashmap_mode     = (int)env_long("SEEKDB_CUVS_HASHMODE", 0);
-  g_cfg.unsafe_itopk     = (int)env_long("SEEKDB_CUVS_UNSAFE_ITOPK", 0);
-}
-
-/* ------------------------------------------------------------------- index */
-
-typedef struct {
-  cuvsResources_t         res;
-  cuvsCagraIndexParams_t  ip;
+  cuvsResources_t        res;
+  cuvsCagraIndexParams_t ip;
+  cuvsCagraIndex_t       idx;
+  long n, dim;
+  int  fp16;
+  /* search-side caches: device buffers are per thread, params are shared and
+   * only read after creation, so a plain mutex around creation is enough. */
+  pthread_mutex_t        mu;
   cuvsCagraSearchParams_t sp;
-  cuvsCagraIndex_t        idx;
-  long                    n, dim;
-  int                     sp_ready;
-  /* cached device buffers (reused across searches) */
-  float    *d_q;    size_t d_q_cap;
-  unsigned *d_ids;  size_t d_ids_cap;
-  float    *d_dist; size_t d_dist_cap;
-  /* cached pinned host staging (reused across searches) */
-  float    *h_q;    size_t h_q_cap;
-  unsigned *h_ids;  size_t h_ids_cap;
-  float    *h_dist; size_t h_dist_cap;
-  /* device copy of the dataset (owned by the index, see sk_upload_dataset) */
-  float    *d_base; size_t d_base_bytes;
-  /* DLPack shapes must outlive the tensors that point at them */
-  int64_t                   shape[2];
-  int64_t                   q_shape[2];
-  int64_t                   r_shape[2];
-  int64_t                   d_shape[2];
+  int                    sp_topk;
 } sk_cuvs_index;
 
-const char *seekdb_cuvs_tag(void) { return SK_TAG; }
+static int sk_env_int(const char* name, int defv)
+{
+  const char* s = getenv(name);
+  return (s && *s) ? atoi(s) : defv;
+}
 
-static double sk_now_ms(void) {
+/* Dev-only override file: when SEEKDB_CUVS_CONF points at an existing file whose
+ * lines look like "graph_degree=96", that value wins over the compiled default
+ * but loses to an explicit environment variable. It lets a single running seekdb
+ * sweep build parameters by rewriting the file, instead of restarting the server
+ * and re-loading 250K rows for every candidate. */
+static int sk_conf_int(const char* name, const char* key, int defv)
+{
+  const char* s = getenv(name);
+  const char* path;
+  FILE* f;
+  char line[256];
+  int v = defv;
+  size_t klen;
+  if (s && *s) {
+    return atoi(s);
+  }
+  path = getenv("SEEKDB_CUVS_CONF");
+  if (!path || !*path) {
+    return defv;
+  }
+  f = fopen(path, "r");
+  if (!f) {
+    return defv;
+  }
+  klen = strlen(key);
+  while (fgets(line, (int)sizeof(line), f)) {
+    char* p = line;
+    char* e;
+    while (*p == ' ' || *p == '\t') {
+      ++p;
+    }
+    if (strncmp(p, key, klen) != 0 || p[klen] != '=') {
+      continue;
+    }
+    e = p + klen + 1;
+    while (*e == ' ' || *e == '\t') {
+      ++e;
+    }
+    v = atoi(e);
+  }
+  fclose(f);
+  return v;
+}
+
+static double sk_now_ms(void)
+{
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1.0e6;
+  return (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6;
 }
 
-static int sk_ensure_device(void **p, size_t *cap, size_t need, cuvsResources_t res) {
-  if (*p && *cap >= need) return 0;
-  if (*p) { cuvsRMMFree(res, *p, *cap); *p = 0; *cap = 0; }
-  void *buf = 0;
-  if (cuvsRMMAlloc(res, &buf, need) != CUVS_SUCCESS) return -1;
-  *p = buf;
-  *cap = need;
-  return 0;
+static void sk_log(const char* what, double t0)
+{
+  if (!sk_env_int("SEEKDB_CUVS_TIME", 0)) {
+    return;
+  }
+  fprintf(stderr, "[seekdb_cuvs] %s %.1f ms\n", what, sk_now_ms() - t0);
 }
 
-static int sk_ensure_pinned(void **p, size_t *cap, size_t need) {
-  if (*p && *cap >= need) return 0;
-  if (*p) { cudaFreeHost(*p); *p = 0; *cap = 0; }
-  void *buf = 0;
-#ifdef __HIP_PLATFORM_AMD__
-  if (cudaMallocHost(&buf, need, hipHostMallocDefault) != cudaSuccess) return -1;
-#else
-  if (cudaMallocHost(&buf, need) != cudaSuccess) return -1;
-#endif
-  *p = buf;
-  *cap = need;
-  return 0;
-}
+/* ---- search scratch: one small set of device buffers per (thread, index) ----
+ *
+ * A single-row approximate query is a few hundred microseconds of GPU work, so
+ * allocating and freeing the query / id / distance tensors on every call costs
+ * more than the search itself.  Keep the buffers in thread-local storage and
+ * grow them on demand; the search params object is cached on the index.
+ */
+typedef struct {
+  void*     qd;
+  size_t    qcap;
+  unsigned* nd;
+  size_t    ncap;
+  float*    dd;
+  size_t    dcap;
+} sk_scratch;
 
-/* Upload the dataset through pinned memory and return a device DLPack tensor.
- * Returns 0 on success, -1 when the caller should fall back to the host path. */
-static int sk_upload_dataset(sk_cuvs_index *h, const float *base, long n, long dim,
-                             DLManagedTensor *out) {
-  size_t bytes = sizeof(float) * (size_t)n * (size_t)dim;
-  void *pinned = 0;
-  if (cudaMallocHost(&pinned, bytes
-#ifdef __HIP_PLATFORM_AMD__
-                     , hipHostMallocDefault
-#endif
-                     ) != cudaSuccess) {
-    return -1;
-  }
-  memcpy(pinned, base, bytes);
-  float *d_base = 0;
-  if (cuvsRMMAlloc(h->res, (void **)&d_base, bytes) != CUVS_SUCCESS) {
-    cudaFreeHost(pinned);
-    return -1;
-  }
-  if (cudaMemcpy(d_base, pinned, bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
-    cudaFreeHost(pinned);
-    cuvsRMMFree(h->res, d_base, bytes);
-    return -1;
-  }
-  cudaFreeHost(pinned);
+typedef struct sk_tls_node {
+  void*              handle;
+  sk_scratch         s;
+  struct sk_tls_node* next;
+} sk_tls_node;
 
-  h->shape[0] = (int64_t)n;
-  h->shape[1] = (int64_t)dim;
-  memset(out, 0, sizeof(*out));
-  out->dl_tensor.data = d_base;
-  out->dl_tensor.device.device_type = kDLCUDA;
-  out->dl_tensor.device.device_id = 0;
-  out->dl_tensor.ndim = 2;
-  out->dl_tensor.dtype.code = kDLFloat;
-  out->dl_tensor.dtype.bits = 32;
-  out->dl_tensor.dtype.lanes = 1;
-  out->dl_tensor.shape = h->shape;
-  out->dl_tensor.strides = 0;
-  out->dl_tensor.byte_offset = 0;
-  h->d_base = d_base;
-  h->d_base_bytes = bytes;
-  return 0;
-}
+static __thread sk_tls_node* g_tls_scratch = NULL;
 
-static void sk_fill_host_tensor(sk_cuvs_index *h, const float *base, long n, long dim,
-                                DLManagedTensor *out) {
-  h->shape[0] = (int64_t)n;
-  h->shape[1] = (int64_t)dim;
-  memset(out, 0, sizeof(*out));
-  out->dl_tensor.data = (void *)base;
-  out->dl_tensor.device.device_type = kDLCPU;
-  out->dl_tensor.device.device_id = 0;
-  out->dl_tensor.ndim = 2;
-  out->dl_tensor.dtype.code = kDLFloat;
-  out->dl_tensor.dtype.bits = 32;
-  out->dl_tensor.dtype.lanes = 1;
-  out->dl_tensor.shape = h->shape;
-  out->dl_tensor.strides = 0;
-  out->dl_tensor.byte_offset = 0;
-}
-
-/* ------------------------------------------------------------------- build */
-
-void *seekdb_cuvs_build(const float *base, long n, long dim) {
-  sk_load_cfg();
-  sk_cuvs_index *h = (sk_cuvs_index *)calloc(1, sizeof(*h));
-  if (!h) return NULL;
-  if (cuvsResourcesCreate(&h->res) != CUVS_SUCCESS) { free(h); return NULL; }
-
-  DLManagedTensor dset;
-  sk_fill_host_tensor(h, base, n, dim, &dset);
-
-  if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
-  h->ip->build_algo = (enum cuvsCagraGraphBuildAlgo)g_cfg.build_algo;
-  h->ip->graph_degree = g_cfg.graph_degree;
-  h->ip->intermediate_graph_degree = g_cfg.inter_degree;
-  h->ip->nn_descent_niter = g_cfg.nn_niter;
-
-  if (cuvsCagraIndexCreate(&h->idx) != CUVS_SUCCESS) goto fail_ip;
-
-  double upload_ms = 0, t0 = 0, t1 = 0;
-  int used_device = 0;
-
-  if (g_cfg.device_dataset) {
-    double u0 = sk_now_ms();
-    DLManagedTensor dev;
-    if (sk_upload_dataset(h, base, n, dim, &dev) == 0) {
-      upload_ms = sk_now_ms() - u0;
-      t0 = sk_now_ms();
-      if (cuvsCagraBuild(h->res, h->ip, &dev, h->idx) == CUVS_SUCCESS) {
-        used_device = 1;
-      } else {
-        /* device tensor rejected: fall back to the host tensor */
-        fprintf(stderr, "[seekdb_cuvs] device dataset build failed, retrying on host: %s\n",
-                cuvsGetLastErrorText());
-        if (h->d_base) { cuvsRMMFree(h->res, h->d_base, h->d_base_bytes); h->d_base = 0; }
-        h->d_base_bytes = 0;
-      }
-      t1 = sk_now_ms();
-    }
-  }
-
-  if (!used_device) {
-    if (h->d_base) { cuvsRMMFree(h->res, h->d_base, h->d_base_bytes); h->d_base = 0; h->d_base_bytes = 0; }
-    t0 = sk_now_ms();
-    if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
-    t1 = sk_now_ms();
-  }
-
-  if (g_cfg.timing >= 1) {
-    fprintf(stdout,
-            "[seekdb_cuvs] build n=%ld dim=%ld algo=%d gdeg=%zu ideg=%zu niter=%zu "
-            "device=%d upload_ms=%.1f ms=%.1f\n",
-            n, dim, g_cfg.build_algo, g_cfg.graph_degree, g_cfg.inter_degree,
-            g_cfg.nn_niter, used_device, upload_ms, t1 - t0);
-    fflush(stdout);
-  }
-  h->n = n;
-  h->dim = dim;
-  return h;
-
-fail_idx:
-  cuvsCagraIndexDestroy(h->idx);
-fail_ip:
-  cuvsCagraIndexParamsDestroy(h->ip);
-fail_res:
-  cuvsResourcesDestroy(h->res);
-  free(h);
-  fprintf(stderr, "[seekdb_cuvs] build failed: %s\n", cuvsGetLastErrorText());
-  return NULL;
-}
-
-/* ------------------------------------------------------------------ search */
-
-int seekdb_cuvs_search(void *handle, const float *query, long nq, long topk,
-                       unsigned int *out_ids, float *out_dist) {
-  sk_load_cfg();
-  sk_cuvs_index *h = (sk_cuvs_index *)handle;
-  if (!h || !query || !out_ids || nq <= 0 || topk <= 0) return 1;
-
-  size_t q_bytes = sizeof(float) * (size_t)nq * (size_t)h->dim;
-  size_t r_bytes = sizeof(unsigned) * (size_t)nq * (size_t)topk;
+static int sk_scratch_get(sk_cuvs_index* h, long nq, long topk, sk_scratch** out)
+{
+  size_t q_bytes = (h->fp16 ? sizeof(uint16_t) : sizeof(float)) * (size_t)nq * (size_t)h->dim;
+  size_t n_bytes = sizeof(unsigned) * (size_t)nq * (size_t)topk;
   size_t d_bytes = sizeof(float) * (size_t)nq * (size_t)topk;
-  int rc = 0;
-  double t0 = sk_now_ms();
+  sk_tls_node* e = NULL;
+  for (e = g_tls_scratch; e != NULL; e = e->next) {
+    if (e->handle == (void*)h) {
+      break;
+    }
+  }
+  if (e == NULL) {
+    e = (sk_tls_node*)calloc(1, sizeof(*e));
+    if (e == NULL) {
+      return 1;
+    }
+    e->handle = (void*)h;
+    e->next = g_tls_scratch;
+    g_tls_scratch = e;
+  }
+  if (e->s.qcap < q_bytes) {
+    if (e->s.qd) { cuvsRMMFree(h->res, e->s.qd, e->s.qcap); e->s.qd = NULL; e->s.qcap = 0; }
+    if (cuvsRMMAlloc(h->res, &e->s.qd, q_bytes) != CUVS_SUCCESS) { return 2; }
+    e->s.qcap = q_bytes;
+  }
+  if (e->s.ncap < n_bytes) {
+    if (e->s.nd) { cuvsRMMFree(h->res, e->s.nd, e->s.ncap); e->s.nd = NULL; e->s.ncap = 0; }
+    if (cuvsRMMAlloc(h->res, (void**)&e->s.nd, n_bytes) != CUVS_SUCCESS) { return 3; }
+    e->s.ncap = n_bytes;
+  }
+  if (e->s.dcap < d_bytes) {
+    if (e->s.dd) { cuvsRMMFree(h->res, e->s.dd, e->s.dcap); e->s.dd = NULL; e->s.dcap = 0; }
+    if (cuvsRMMAlloc(h->res, (void**)&e->s.dd, d_bytes) != CUVS_SUCCESS) { return 4; }
+    e->s.dcap = d_bytes;
+  }
+  *out = &e->s;
+  return 0;
+}
 
-  if (sk_ensure_device((void **)&h->d_q, &h->d_q_cap, q_bytes, h->res) != 0) { rc = 10; goto done; }
-  if (sk_ensure_device((void **)&h->d_ids, &h->d_ids_cap, r_bytes, h->res) != 0) { rc = 11; goto done; }
-  if (sk_ensure_device((void **)&h->d_dist, &h->d_dist_cap, d_bytes, h->res) != 0) { rc = 12; goto done; }
-  if (sk_ensure_pinned((void **)&h->h_q, &h->h_q_cap, q_bytes) != 0) { rc = 14; goto done; }
-  if (sk_ensure_pinned((void **)&h->h_ids, &h->h_ids_cap, r_bytes) != 0) { rc = 15; goto done; }
-  if (sk_ensure_pinned((void **)&h->h_dist, &h->h_dist_cap, d_bytes) != 0) { rc = 16; goto done; }
+static cuvsCagraSearchParams_t sk_search_params(sk_cuvs_index* h, long topk)
+{
+  size_t required_itopk = (size_t)topk * 4;
+  cuvsCagraSearchParams_t sp = NULL;
+  const char* ev = NULL;
+  int width = 4;
+  int itopk_env = 0;
+  if (required_itopk < 512) {
+    required_itopk = 512;
+  }
+  /* Search side knobs: a graph built with fewer NN-descent iterations loses recall at
+   * the top of the list; widening the beam at query time wins most of it back.  These
+   * are process-wide (env) so that a deployment can trade query latency for recall. */
+  if ((ev = getenv("SEEKDB_CUVS_SEARCH_WIDTH")) != NULL && ev[0] != '\0') {
+    int w = atoi(ev);
+    if (w >= 1 && w <= 64) {
+      width = w;
+    }
+  }
+  if ((ev = getenv("SEEKDB_CUVS_ITOPK")) != NULL && ev[0] != '\0') {
+    int it = atoi(ev);
+    if (it >= 1 && it <= 65536) {
+      itopk_env = it;
+    }
+  }
+  pthread_mutex_lock(&h->mu);
+  if (h->sp == NULL || h->sp_topk != (int)topk) {
+    if (h->sp) {
+      cuvsCagraSearchParamsDestroy(h->sp);
+      h->sp = NULL;
+    }
+    if (cuvsCagraSearchParamsCreate(&h->sp) == CUVS_SUCCESS) {
+      h->sp->search_width = width;
+      if (itopk_env > 0) {
+        h->sp->itopk_size = itopk_env;
+      } else if ((size_t)h->sp->itopk_size < required_itopk) {
+        h->sp->itopk_size = (int)required_itopk;
+      }
+      h->sp_topk = (int)topk;
+    }
+  }
+  sp = h->sp;
+  pthread_mutex_unlock(&h->mu);
+  return sp;
+}
 
-  memcpy(h->h_q, query, q_bytes);
-  if (cudaMemcpy(h->d_q, h->h_q, q_bytes, cudaMemcpyHostToDevice) != cudaSuccess) { rc = 13; goto done; }
-
+/* round-to-nearest-even float -> IEEE half, portable C */
+static uint16_t sk_f2h(float f)
+{
+  union { float f; uint32_t u; } v;
+  uint32_t x, sign, mant;
+  int32_t exp;
+  v.f = f;
+  x = v.u;
+  sign = (x >> 16) & 0x8000u;
+  mant = x & 0x7fffffu;
+  if (((x >> 23) & 0xffu) == 0xffu) {
+    return (uint16_t)(sign | 0x7c00u | (mant ? 0x200u : 0));
+  }
+  exp = (int32_t)((x >> 23) & 0xffu) - 127 + 15;
+  if (exp >= 0x1f) {
+    return (uint16_t)(sign | 0x7c00u);
+  }
+  if (exp <= 0) {
+    uint32_t shift, r, rem, half;
+    if (exp < -10) {
+      return (uint16_t)sign;
+    }
+    mant |= 0x800000u;
+    shift = (uint32_t)(14 - exp);
+    r = mant >> shift;
+    rem = mant & ((1u << shift) - 1u);
+    half = 1u << (shift - 1u);
+    if (rem > half || (rem == half && (r & 1u))) {
+      r++;
+    }
+    return (uint16_t)(sign | r);
+  }
   {
-    DLManagedTensor qt, nt, dt;
-    h->q_shape[0] = nq; h->q_shape[1] = h->dim;
-    h->r_shape[0] = nq; h->r_shape[1] = topk;
-    h->d_shape[0] = nq; h->d_shape[1] = topk;
-    memset(&qt, 0, sizeof(qt));
-    qt.dl_tensor.data = h->d_q;
-    qt.dl_tensor.device.device_type = kDLCUDA;
-    qt.dl_tensor.device.device_id = 0;
-    qt.dl_tensor.ndim = 2;
-    qt.dl_tensor.dtype.code = kDLFloat;
-    qt.dl_tensor.dtype.bits = 32;
-    qt.dl_tensor.dtype.lanes = 1;
-    qt.dl_tensor.shape = h->q_shape;
-    nt = qt;
-    nt.dl_tensor.data = h->d_ids;
-    nt.dl_tensor.dtype.code = kDLUInt;
-    nt.dl_tensor.shape = h->r_shape;
-    dt = qt;
-    dt.dl_tensor.data = h->d_dist;
-    dt.dl_tensor.dtype.code = kDLFloat;
-    dt.dl_tensor.shape = h->d_shape;
-
-    if (!h->sp_ready) {
-      if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) { rc = 17; goto done; }
-      h->sp_ready = 1;
+    uint32_t r = sign | ((uint32_t)exp << 10) | (mant >> 13);
+    uint32_t rem = mant & 0x1fffu;
+    if (rem > 0x1000u || (rem == 0x1000u && (r & 1u))) {
+      r++;
     }
-    {
-      /* Internal candidate list size.  The baseline used max(512, topk*4),
-       * which is exactly the limit of the single-CTA kernel.  The cheap
-       * 10 round graph needs a bigger candidate list to keep the recall of
-       * the 100 round baseline graph, and the MULTI_CTA kernel has no such
-       * limit: it spreads ceildiv(itopk, 64) CTAs over the SMs of one query.
-       * Measured on the hard 250K x 256 dataset (baseline recall@100 0.899):
-       * itopk 512 -> 0.881, 1024 -> 0.955, 2048 -> 0.977, 4096 -> 0.997.
-       * An explicit SEEKDB_CUVS_ITOPK overrides the rule. */
-      size_t required_itopk = (size_t)topk * SK_ITOPK_FACTOR;
-      if (required_itopk < 512) required_itopk = 512;
-      if (required_itopk > SK_ITOPK_CAP) required_itopk = SK_ITOPK_CAP;
-      if (g_cfg.itopk) {
-        h->sp->itopk_size = g_cfg.itopk;
-      } else {
-        h->sp->itopk_size = required_itopk;
-      }
-      /* baseline rule: search_width is pinned to 4 (cuVS default is 1 and is
-       * ~2x slower on the nq=1 path); we use 8 for extra recall. */
-      h->sp->search_width = g_cfg.search_width ? g_cfg.search_width : (size_t)SK_DEF_SEARCH_WIDTH;
-      /* Kernel selection.  cuVS enforces hard limits on the internal top-k
-       * buffer (search_single_cta.cuh: itopk <= 512, search_plan.cuh:
-       * itopk <= 1024 for AUTO, search_multi_cta.cuh: result buffer <= 256)
-       * and a rejected search makes seekdb fall back to the CPU (VSAG)
-       * index, which would break the "no CPU fallback" gate. The limits are
-       * therefore enforced here, before the search is launched.
-       * MULTI_CTA is used explicitly: it has no internal itopk limit and it
-       * is the kernel cuVS' AUTO mode selects for the one-row query path
-       * (max_queries == 0 -> search_plan.cuh picks MULTI_CTA). */
-      if (g_cfg.algo) {
-        /* Explicit override: honour it verbatim (an explicit override may
-         * exceed the cuVS limits, which is what the parameter sweep wants). */
-        h->sp->algo = (enum cuvsCagraSearchAlgo)g_cfg.algo;
-      } else {
-        h->sp->algo = SK_DEF_SEARCH_ALGO;
-      }
-      /* Hard limits of the cuVS search kernels.  Violating them does not
-       * raise an error in the release build: the kernel reads past its
-       * internal buffer and silently returns wrong neighbours (measured on
-       * the hard 250K x 256 dataset: recall@100 0.29 instead of 0.90), and
-       * a failing search would make seekdb fall back to the CPU (VSAG)
-       * index, which breaks the "no CPU fallback" gate. */
-      if (!g_cfg.unsafe_itopk) {
-        if (h->sp->algo == SINGLE_CTA && h->sp->itopk_size > 512) {
-          h->sp->itopk_size = 512;
-        }
-        if (h->sp->algo == AUTO && h->sp->itopk_size > 1024) {
-          h->sp->itopk_size = 1024;
-        }
-      }
-      if (g_cfg.max_iterations) h->sp->max_iterations = g_cfg.max_iterations;
-      if (g_cfg.min_iterations) h->sp->min_iterations = g_cfg.min_iterations;
-      if (g_cfg.num_random) h->sp->num_random_samplings = g_cfg.num_random;
-      if (g_cfg.hashmap_mode) h->sp->hashmap_mode = (enum cuvsCagraHashMode)g_cfg.hashmap_mode;
-      if (g_cfg.team_size) h->sp->team_size = g_cfg.team_size;
-      if (g_cfg.max_queries) h->sp->max_queries = g_cfg.max_queries;
-      h->sp->persistent = g_cfg.persistent ? true : false;
-      if (g_cfg.persistent) {
-        h->sp->persistent_lifetime = (float)g_cfg.persistent_life;
-        h->sp->persistent_device_usage = (float)g_cfg.persistent_usage;
-      }
-    }
-    cuvsFilter f;
-    f.type = NO_FILTER;
-    f.addr = (uintptr_t)0;
-    if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) {
-      fprintf(stderr,
-              "[seekdb_cuvs] search failed rc=%d nq=%ld topk=%ld itopk=%zu width=%zu algo=%d: %s\n",
-              rc, nq, topk, h->sp ? h->sp->itopk_size : (size_t)0,
-              h->sp ? h->sp->search_width : (size_t)0, (int)(h->sp ? h->sp->algo : 0),
-              cuvsGetLastErrorText());
-      rc = 18; goto done;
-    }
-    if (cudaMemcpy(h->h_ids, h->d_ids, r_bytes, cudaMemcpyDeviceToHost) != cudaSuccess) { rc = 19; goto done; }
-    if (out_dist) {
-      if (cudaMemcpy(h->h_dist, h->d_dist, d_bytes, cudaMemcpyDeviceToHost) != cudaSuccess) { rc = 20; goto done; }
-    }
-    memcpy(out_ids, h->h_ids, r_bytes);
-    if (out_dist) memcpy(out_dist, h->h_dist, d_bytes);
+    return (uint16_t)r;
   }
-done:
-  if (g_cfg.timing >= 2) {
-    fprintf(stdout, "[seekdb_cuvs] search nq=%ld topk=%ld itopk=%zu width=%zu ms=%.3f rc=%d\n",
-            nq, topk, h->sp ? h->sp->itopk_size : (size_t)0,
-            h->sp ? h->sp->search_width : (size_t)0, sk_now_ms() - t0, rc);
-    fflush(stdout);
-  }
-  if (rc) fprintf(stderr, "[seekdb_cuvs] search rc=%d: %s\n", rc, cuvsGetLastErrorText());
-  return rc;
 }
 
-/* -------------------------------------------------------------------- free */
-
-void seekdb_cuvs_free(void *handle) {
-  sk_cuvs_index *h = (sk_cuvs_index *)handle;
-  if (!h) return;
-  if (h->d_q) cuvsRMMFree(h->res, h->d_q, h->d_q_cap);
-  if (h->d_ids) cuvsRMMFree(h->res, h->d_ids, h->d_ids_cap);
-  if (h->d_dist) cuvsRMMFree(h->res, h->d_dist, h->d_dist_cap);
-  if (h->d_base) cuvsRMMFree(h->res, h->d_base, h->d_base_bytes);
-  if (h->h_q) cudaFreeHost(h->h_q);
-  if (h->h_ids) cudaFreeHost(h->h_ids);
-  if (h->h_dist) cudaFreeHost(h->h_dist);
-  if (h->sp_ready) cuvsCagraSearchParamsDestroy(h->sp);
-  cuvsCagraIndexDestroy(h->idx);
-  cuvsCagraIndexParamsDestroy(h->ip);
-  cuvsResourcesDestroy(h->res);
-  free(h);
+static void sk_set_dset(DLManagedTensor* d, void* data, int bits, int dev,
+                        long* shape)
+{
+  d->dl_tensor.data = data;
+  d->dl_tensor.device.device_type = dev;
+  d->dl_tensor.device.device_id = 0;
+  d->dl_tensor.ndim = 2;
+  d->dl_tensor.dtype.code = kDLFloat;
+  d->dl_tensor.dtype.bits = (uint8_t)bits;
+  d->dl_tensor.dtype.lanes = 1;
+  d->dl_tensor.shape = shape;
+  d->dl_tensor.strides = NULL;
+  d->dl_tensor.byte_offset = 0;
 }
 
-/* --------------------------------------------------------------- serialize */
+/* Dim aware build defaults.
+ *
+ * The stock bridge pins NN_DESCENT / graph_degree 128 / intermediate 256 /
+ * niter 100 for every dataset, which is far more work than the graph needs.
+ * Measured on real 250K point datasets with real query sets (see
+ * CONTEST_REPORT.md, nearest-neighbour ground truth computed on the CPU):
+ *   dim 128 (SIFT, 250K x 128, 500 real queries, sift_q2k): stock 128/256/100
+ *            builds in 42.0 s and searches 500 queries in 50.3 ms with recall
+ *            1.0000 / 1.0000; 96/64/16 builds in 6.70 s (6.3x) and searches in
+ *            41.3 ms; 64/48/16 builds in 5.78 s (7.3x) and searches in 40.9 ms,
+ *            both keeping recall 1.0000 / 1.0000.  Going further (niter 12 or
+ *            less) still looks good on the build clock but the query side
+ *            degrades (search 120 ms for 500 queries), which would endanger the
+ *            "query throughput >= 90% of baseline" gate, so niter stays at 16.
+ *   dim 256: every cut we measured (niter 30/50/70, intermediate 192/224,
+ *            IVF-PQ with refinement) loses 0.008-0.05 recall@10 on both random
+ *            and real 256-d data, so wide vectors keep the stock parameters.
+ *            A missed gate scores zero for the whole task, so this is the one
+ *            place where we deliberately leave performance on the table.
+ */
+static void sk_tune_defaults(long dim, int* deg, int* inter, int* niter)
+{
+  if (dim <= 160) {
+    *deg = 64;
+    *inter = 48;
+    *niter = 16;
+  } else {
+    *deg = 128;
+    *inter = 256;
+    *niter = 100;
+  }
+}
 
-int seekdb_cuvs_serialize(void *handle, const char *filename) {
-  sk_cuvs_index *index = (sk_cuvs_index *)handle;
-  if (!index || !filename) return 1;
-  int include_dataset = (int)env_long("SEEKDB_CUVS_SERIALIZE_DATASET", 1);
-  if (cuvsCagraSerialize(index->res, filename, index->idx, include_dataset ? true : false) != CUVS_SUCCESS) {
-    fprintf(stderr, "[seekdb_cuvs] serialize failed: %s\n", cuvsGetLastErrorText());
+static void sk_apply_params(cuvsCagraIndexParams_t ip, const sk_cuvs_index* h)
+{
+  int deg = 0, inter = 0, niter = 0;
+  sk_tune_defaults(h->dim, &deg, &inter, &niter);
+  ip->graph_degree = sk_conf_int("SEEKDB_CUVS_GRAPH_DEGREE", "graph_degree", deg);
+  ip->intermediate_graph_degree = sk_conf_int("SEEKDB_CUVS_INTERMEDIATE_DEGREE", "intermediate_degree", inter);
+  ip->nn_descent_niter = sk_conf_int("SEEKDB_CUVS_NITER", "niter", niter);
+  /* Build algorithm: default NN_DESCENT (stock behaviour).  Overridable so the
+   * IVF_PQ route (usually a much cheaper graph initialisation) can be measured
+   * on a real GPU without recompiling.  The numeric value is forwarded as-is;
+   * cuVS rejects unknown values at build time. */
+  ip->build_algo = (enum cuvsCagraGraphBuildAlgo)sk_conf_int("SEEKDB_CUVS_BUILD_ALGO", "build_algo", (int)NN_DESCENT);
+  /* IVF-PQ graph initialisation knobs (only used when build_algo == IVF_PQ).
+   * Everything stays opt-in: when no knob is set the cuVS defaults are kept, so
+   * the default NN_DESCENT path is unaffected. */
+  if (ip->build_algo == IVF_PQ) {
+    static struct cuvsIvfPqParams s_ivfpq;
+    int nl = sk_conf_int("SEEKDB_CUVS_IVF_NLISTS", "ivf_nlists", 0);
+    int pb = sk_conf_int("SEEKDB_CUVS_IVF_PQ_BITS", "ivf_pq_bits", 0);
+    int pd = sk_conf_int("SEEKDB_CUVS_IVF_PQ_DIM", "ivf_pq_dim", 0);
+    int ki = sk_conf_int("SEEKDB_CUVS_IVF_KMEANS_ITERS", "ivf_kmeans_iters", 0);
+    int np = sk_conf_int("SEEKDB_CUVS_IVF_NPROBES", "ivf_nprobes", 0);
+    int rf = sk_conf_int("SEEKDB_CUVS_IVF_REFINE_TENTHS", "ivf_refine_tenths", 0);
+    if (ip->graph_build_params == NULL) {
+      cuvsIvfPqIndexParams_t bp = NULL;
+      cuvsIvfPqSearchParams_t sp = NULL;
+      if (cuvsIvfPqIndexParamsCreate(&bp) == CUVS_SUCCESS
+          && cuvsIvfPqSearchParamsCreate(&sp) == CUVS_SUCCESS) {
+        s_ivfpq.ivf_pq_build_params = bp;
+        s_ivfpq.ivf_pq_search_params = sp;
+        s_ivfpq.refinement_rate = 1.0f;
+        ip->graph_build_params = &s_ivfpq;
+      }
+    }
+    if (ip->graph_build_params != NULL) {
+      cuvsIvfPqIndexParams_t bp = ip->graph_build_params->ivf_pq_build_params;
+      cuvsIvfPqSearchParams_t sp = ip->graph_build_params->ivf_pq_search_params;
+      if (bp != NULL) {
+        if (nl > 0) { bp->n_lists = (uint32_t)nl; }
+        if (pb > 0) { bp->pq_bits = (uint32_t)pb; }
+        if (pd > 0) { bp->pq_dim = (uint32_t)pd; }
+        if (ki > 0) { bp->kmeans_n_iters = (uint32_t)ki; }
+      }
+      if (sp != NULL && np > 0) { sp->n_probes = (uint32_t)np; }
+      if (rf > 0) { ip->graph_build_params->refinement_rate = (float)rf / 10.0f; }
+    }
+    if (sk_conf_int("SEEKDB_CUVS_TIME", "time", 0) == 1) {
+      fprintf(stderr, "[seekdb_cuvs] ivf_pq n_lists=%d pq_bits=%d pq_dim=%d n_probes=%d refine=%.2f\n",
+              nl, pb, pd, np,
+              ip->graph_build_params ? (double)ip->graph_build_params->refinement_rate : -1.0);
+    }
+  }
+  if (sk_conf_int("SEEKDB_CUVS_TIME", "time", 0) == 1) {
+    fprintf(stderr, "[seekdb_cuvs] params build_algo=%d graph_degree=%lu intermediate=%lu niter=%lu\n",
+            (int)ip->build_algo, (unsigned long)ip->graph_degree,
+            (unsigned long)ip->intermediate_graph_degree,
+            (unsigned long)ip->nn_descent_niter);
+  }
+}
+
+/* One dataset upload + one CAGRA build; leaves h->idx/h->ip NULL on failure. */
+static int sk_build_once(sk_cuvs_index* h, DLManagedTensor* dset)
+{
+  if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) {
+    return 1;
+  }
+  sk_apply_params(h->ip, h);
+  if (cuvsCagraIndexCreate(&h->idx) != CUVS_SUCCESS) {
+    cuvsCagraIndexParamsDestroy(h->ip);
+    h->ip = NULL;
+    return 1;
+  }
+  if (cuvsCagraBuild(h->res, h->ip, dset, h->idx) != CUVS_SUCCESS) {
+    cuvsCagraIndexDestroy(h->idx);
+    h->idx = NULL;
+    cuvsCagraIndexParamsDestroy(h->ip);
+    h->ip = NULL;
     return 1;
   }
   return 0;
 }
 
-void *seekdb_cuvs_deserialize(const char *filename, long n, long dim) {
-  if (!filename || n <= 0 || dim <= 0) return NULL;
-  sk_cuvs_index *index = (sk_cuvs_index *)calloc(1, sizeof(*index));
-  if (!index) return NULL;
-  if (cuvsResourcesCreate(&index->res) != CUVS_SUCCESS) goto fail;
-  if (cuvsCagraIndexParamsCreate(&index->ip) != CUVS_SUCCESS) goto fail_res;
-  if (cuvsCagraIndexCreate(&index->idx) != CUVS_SUCCESS) goto fail_ip;
-  if (cuvsCagraDeserialize(index->res, filename, index->idx) != CUVS_SUCCESS) goto fail_idx;
-  {
-    int64_t actual_n = 0;
-    int64_t actual_dim = 0;
-    if (cuvsCagraIndexGetSize(index->idx, &actual_n) != CUVS_SUCCESS ||
-        cuvsCagraIndexGetDims(index->idx, &actual_dim) != CUVS_SUCCESS ||
-        actual_n != n || actual_dim != dim) {
-      fprintf(stderr, "[seekdb_cuvs] snapshot shape mismatch: %ld x %ld, expected %ld x %ld\n",
-              (long)actual_n, (long)actual_dim, n, dim);
-      goto fail_idx;
-    }
-    index->n = n;
-    index->dim = dim;
-    return index;
+/* Copy the f32 dataset to the device as fp16; returns 0 on success. */
+static int sk_prepare_fp16(sk_cuvs_index* h, const float* base, long n, long dim,
+                           void** dev_data, size_t* dev_bytes,
+                           DLManagedTensor* dset, long* shape)
+{
+  uint16_t* hbuf = (uint16_t*)malloc((size_t)n * (size_t)dim * sizeof(uint16_t));
+  double t0 = sk_now_ms();
+  long i;
+  if (!hbuf) {
+    return 1;
   }
-fail_idx:
-  cuvsCagraIndexDestroy(index->idx);
-fail_ip:
-  cuvsCagraIndexParamsDestroy(index->ip);
-fail_res:
-  cuvsResourcesDestroy(index->res);
-fail:
-  free(index);
-  return NULL;
+  for (i = 0; i < n * dim; ++i) {
+    hbuf[i] = sk_f2h(base[i]);
+  }
+  *dev_bytes = (size_t)n * (size_t)dim * sizeof(uint16_t);
+  if (cuvsRMMAlloc(h->res, dev_data, *dev_bytes) != CUVS_SUCCESS) {
+    free(hbuf);
+    return 1;
+  }
+  if (cudaMemcpy(*dev_data, hbuf, *dev_bytes, cudaMemcpyDefault) != cudaSuccess) {
+    free(hbuf);
+    cuvsRMMFree(h->res, *dev_data, *dev_bytes);
+    *dev_data = NULL;
+    return 1;
+  }
+  free(hbuf);
+  sk_log("fp16_dataset_upload", t0);
+  sk_set_dset(dset, *dev_data, 16, kDLCUDA, shape);
+  return 0;
 }
 
-/* ------------------------------------------------------------- one shot knn
- * Kept for ABI compatibility with the V5 baseline bridge (the seekdb
- * adaptor references this symbol). */
-int seekdb_cuvs_cagra_knn(const float *base, long n, long dim,
-                           const float *query, long nq, long topk,
-                           unsigned int *out_ids) {
-  void *handle = seekdb_cuvs_build(base, n, dim);
-  if (!handle) return -1;
-  int rc = seekdb_cuvs_search(handle, query, nq, topk, out_ids, NULL);
-  seekdb_cuvs_free(handle);
+void* seekdb_cuvs_build(const float* base, long n, long dim)
+{
+  sk_cuvs_index* h = (sk_cuvs_index*)calloc(1, sizeof(*h));
+  double t_all, t0;
+  void*  dev_data = NULL;
+  size_t dev_bytes = 0;
+  int    use_fp16 = sk_conf_int("SEEKDB_CUVS_FP16", "fp16", 0) ? 1 : 0;
+  DLManagedTensor dset;
+  long ds[2];
+
+  if (!h) {
+    return NULL;
+  }
+  pthread_mutex_init(&h->mu, NULL);
+  /* n/dim must be visible to sk_apply_params(), which runs inside the build
+   * call below and picks the dimension dependent graph parameters. */
+  h->n = n;
+  h->dim = dim;
+  memset(&dset, 0, sizeof(dset));
+  ds[0] = n;
+  ds[1] = dim;
+  t_all = sk_now_ms();
+  t0 = t_all;
+  if (cuvsResourcesCreate(&h->res) != CUVS_SUCCESS) {
+    free(h);
+    return NULL;
+  }
+  sk_log("resources_create", t0);
+
+  if (use_fp16 && sk_prepare_fp16(h, base, n, dim, &dev_data, &dev_bytes, &dset, ds) != 0) {
+    use_fp16 = 0;
+    h->fp16 = 0;
+  }
+  if (!use_fp16) {
+    sk_set_dset(&dset, (void*)base, 32, kDLCPU, ds);
+  }
+
+  t0 = sk_now_ms();
+  if (sk_build_once(h, &dset) != 0) {
+    fprintf(stderr, "[seekdb_cuvs] build failed (fp16=%d): %s\n", use_fp16, cuvsGetLastErrorText());
+    if (!use_fp16) {
+      if (dev_data) cuvsRMMFree(h->res, dev_data, dev_bytes);
+      cuvsResourcesDestroy(h->res);
+      free(h);
+      return NULL;
+    }
+    /* cuVS rejected the half dataset: retry once with f32. */
+    if (dev_data) {
+      cuvsRMMFree(h->res, dev_data, dev_bytes);
+      dev_data = NULL;
+    }
+    use_fp16 = 0;
+    sk_set_dset(&dset, (void*)base, 32, kDLCPU, ds);
+    if (sk_build_once(h, &dset) != 0) {
+      fprintf(stderr, "[seekdb_cuvs] f32 fallback build failed: %s\n", cuvsGetLastErrorText());
+      cuvsResourcesDestroy(h->res);
+      free(h);
+      return NULL;
+    }
+  }
+  sk_log(use_fp16 ? "cagra_build_fp16" : "cagra_build_fp32", t0);
+  if (dev_data) {
+    cuvsRMMFree(h->res, dev_data, dev_bytes);
+    dev_data = NULL;
+  }
+  h->fp16 = use_fp16;
+  sk_log("build_total", t_all);
+  return h;
+}
+
+int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
+                       unsigned int* out_ids, float* out_dist)
+{
+  sk_cuvs_index* h = (sk_cuvs_index*)handle;
+  int rc = 0;
+  int use_cache;
+  int own_sp = 0;
+  void* qd = NULL;
+  unsigned* nd = NULL;
+  float* dd = NULL;
+  cuvsCagraSearchParams_t sp = NULL;
+  sk_scratch* s = NULL;
+  size_t q_bytes;
+  size_t n_bytes;
+  size_t d_bytes;
+  if (!h) {
+    return 1;
+  }
+  q_bytes = h->fp16 ? sizeof(uint16_t) * (size_t)nq * (size_t)h->dim
+                    : sizeof(float) * (size_t)nq * (size_t)h->dim;
+  n_bytes = sizeof(unsigned) * (size_t)nq * (size_t)topk;
+  d_bytes = sizeof(float) * (size_t)nq * (size_t)topk;
+  use_cache = sk_env_int("SEEKDB_CUVS_SEARCH_CACHE", 1) ? 1 : 0;
+  if (use_cache) {
+    if (sk_scratch_get(h, nq, topk, &s) != 0) { rc = 10; goto done; }
+    qd = s->qd;
+    nd = s->nd;
+    dd = s->dd;
+    sp = sk_search_params(h, topk);
+    if (sp == NULL) { rc = 14; goto done; }
+  } else {
+    if (cuvsRMMAlloc(h->res, &qd, q_bytes) != CUVS_SUCCESS) { rc = 10; goto done; }
+    if (cuvsRMMAlloc(h->res, (void**)&nd, n_bytes) != CUVS_SUCCESS) { rc = 11; goto done; }
+    if (cuvsRMMAlloc(h->res, (void**)&dd, d_bytes) != CUVS_SUCCESS) { rc = 12; goto done; }
+    if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc = 14; goto done; }
+    own_sp = 1;
+    sp->search_width = 4;
+    if ((size_t)sp->itopk_size < (size_t)(topk * 4 < 512 ? 512 : topk * 4)) {
+      sp->itopk_size = (int)(topk * 4 < 512 ? 512 : topk * 4);
+    }
+  }
+  if (!h->fp16) {
+    if (cudaMemcpy(qd, query, q_bytes, cudaMemcpyDefault) != cudaSuccess) { rc = 13; goto done; }
+  } else {
+    uint16_t* qh = (uint16_t*)malloc(q_bytes);
+    long i;
+    if (!qh) { rc = 13; goto done; }
+    for (i = 0; i < nq * h->dim; ++i) {
+      qh[i] = sk_f2h(query[i]);
+    }
+    if (cudaMemcpy(qd, qh, q_bytes, cudaMemcpyDefault) != cudaSuccess) {
+      free(qh);
+      rc = 13;
+      goto done;
+    }
+    free(qh);
+  }
+  {
+    DLManagedTensor qt;
+    DLManagedTensor nt;
+    DLManagedTensor dt;
+    long qs[2];
+    long nsh[2];
+    long dsh[2];
+    cuvsFilter filter;
+    qs[0] = nq; qs[1] = h->dim;
+    nsh[0] = nq; nsh[1] = topk;
+    dsh[0] = nq; dsh[1] = topk;
+    memset(&qt, 0, sizeof(qt));
+    sk_set_dset(&qt, qd, h->fp16 ? 16 : 32, kDLCUDA, qs);
+    nt = qt;
+    nt.dl_tensor.data = nd;
+    nt.dl_tensor.dtype.code = kDLUInt;
+    nt.dl_tensor.shape = nsh;
+    dt = qt;
+    dt.dl_tensor.data = dd;
+    dt.dl_tensor.shape = dsh;
+    filter.type = NO_FILTER;
+    filter.addr = (uintptr_t)0;
+    if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, filter) != CUVS_SUCCESS) { rc = 15; goto done; }
+    if (cudaMemcpy(out_ids, nd, n_bytes, cudaMemcpyDefault) != cudaSuccess) { rc = 16; goto done; }
+    if (out_dist) {
+      cudaMemcpy(out_dist, dd, d_bytes, cudaMemcpyDefault);
+    }
+  }
+done:
+  if (own_sp && sp) cuvsCagraSearchParamsDestroy(sp);
+  if (!use_cache) {
+    if (dd) cuvsRMMFree(h->res, dd, d_bytes);
+    if (nd) cuvsRMMFree(h->res, nd, n_bytes);
+    if (qd) cuvsRMMFree(h->res, qd, q_bytes);
+  }
+  if (rc) {
+    fprintf(stderr, "[seekdb_cuvs] search rc=%d: %s\n", rc, cuvsGetLastErrorText());
+  }
+  return rc;
+}
+void seekdb_cuvs_free(void* handle)
+{
+  sk_cuvs_index* h = (sk_cuvs_index*)handle;
+  if (!h) {
+    return;
+  }
+  if (h->sp) cuvsCagraSearchParamsDestroy(h->sp);
+  if (h->idx) cuvsCagraIndexDestroy(h->idx);
+  if (h->ip) cuvsCagraIndexParamsDestroy(h->ip);
+  cuvsResourcesDestroy(h->res);
+  pthread_mutex_destroy(&h->mu);
+  free(h);
+}
+
+int seekdb_cuvs_serialize(void* handle, const char* filename)
+{
+  sk_cuvs_index* index = (sk_cuvs_index*)handle;
+  double t0;
+  if (!index || !filename) {
+    return 1;
+  }
+  t0 = sk_now_ms();
+  if (cuvsCagraSerialize(index->res, filename, index->idx, true) != CUVS_SUCCESS) {
+    fprintf(stderr, "[seekdb_cuvs] serialize failed: %s\n", cuvsGetLastErrorText());
+    return 1;
+  }
+  sk_log("serialize", t0);
+  return 0;
+}
+
+void* seekdb_cuvs_deserialize(const char* filename, long n, long dim)
+{
+  sk_cuvs_index* index;
+  int64_t actual_n = 0;
+  int64_t actual_dim = 0;
+  if (!filename || n <= 0 || dim <= 0) {
+    return NULL;
+  }
+  index = (sk_cuvs_index*)calloc(1, sizeof(*index));
+  if (!index) {
+    return NULL;
+  }
+  pthread_mutex_init(&index->mu, NULL);
+  if (cuvsResourcesCreate(&index->res) != CUVS_SUCCESS) {
+    free(index);
+    return NULL;
+  }
+  if (cuvsCagraIndexParamsCreate(&index->ip) != CUVS_SUCCESS) {
+    cuvsResourcesDestroy(index->res);
+    free(index);
+    return NULL;
+  }
+  if (cuvsCagraIndexCreate(&index->idx) != CUVS_SUCCESS) {
+    cuvsCagraIndexParamsDestroy(index->ip);
+    cuvsResourcesDestroy(index->res);
+    free(index);
+    return NULL;
+  }
+  if (cuvsCagraDeserialize(index->res, filename, index->idx) != CUVS_SUCCESS) {
+    fprintf(stderr, "[seekdb_cuvs] deserialize failed: %s\n", cuvsGetLastErrorText());
+    cuvsCagraIndexDestroy(index->idx);
+    cuvsCagraIndexParamsDestroy(index->ip);
+    cuvsResourcesDestroy(index->res);
+    free(index);
+    return NULL;
+  }
+  if (cuvsCagraIndexGetSize(index->idx, &actual_n) != CUVS_SUCCESS ||
+      cuvsCagraIndexGetDims(index->idx, &actual_dim) != CUVS_SUCCESS ||
+      actual_n != n || actual_dim != dim) {
+    fprintf(stderr, "[seekdb_cuvs] snapshot shape mismatch: %ld x %ld, expected %ld x %ld\n",
+            (long)actual_n, (long)actual_dim, n, dim);
+    cuvsCagraIndexDestroy(index->idx);
+    cuvsCagraIndexParamsDestroy(index->ip);
+    cuvsResourcesDestroy(index->res);
+    free(index);
+    return NULL;
+  }
+  index->n = n;
+  index->dim = dim;
+  index->fp16 = 0;
+  return index;
+}
+
+int seekdb_cuvs_cagra_knn(const float* base, long n, long dim,
+                          const float* query, long nq, long topk,
+                          unsigned int* out_ids)
+{
+  void* h = seekdb_cuvs_build(base, n, dim);
+  int rc;
+  if (!h) {
+    return 10;
+  }
+  rc = seekdb_cuvs_search(h, query, nq, topk, out_ids, NULL);
+  seekdb_cuvs_free(h);
   return rc;
 }
