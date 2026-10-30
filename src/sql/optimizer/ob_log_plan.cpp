@@ -11987,6 +11987,40 @@ int ObLogPlan::construct_startup_filter_for_limit(ObRawExpr *limit_expr, ObLogic
   return ret;
 }
 
+// Detect the plan shape `select count(*) from t where match(...)`: the projection is
+// exactly one count(*) aggregate, there is no limit / window / having / other filter and
+// the scan is a scalar aggregate. Only in this case the match filter evaluation can be
+// skipped by the text retrieval scan (the retrieval itself already filters candidates).
+static int check_text_scan_count_only(const ObDMLStmt *stmt,
+                                      const common::ObIArray<ObRawExpr *> &scan_filters,
+                                      bool &count_only)
+{
+  int ret = OB_SUCCESS;
+  count_only = false;
+  const ObSelectStmt *select_stmt = NULL;
+  if (OB_ISNULL(stmt)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (!stmt->is_select_stmt()) {
+    // not a select statement, keep the normal path
+  } else if (FALSE_IT(select_stmt = static_cast<const ObSelectStmt *>(stmt))) {
+  } else if (!select_stmt->is_scala_group_by()
+             || select_stmt->has_limit()
+             || select_stmt->has_window_function()
+             || 0 != scan_filters.count()
+             || 0 != select_stmt->get_having_expr_size()
+             || 1 != select_stmt->get_select_item_size()) {
+    // mixed shape, keep the normal path
+  } else {
+    const ObRawExpr *select_expr = select_stmt->get_select_item(0).expr_;
+    if (OB_ISNULL(select_expr)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (T_FUN_COUNT == select_expr->get_expr_type() && 0 == select_expr->get_param_count()) {
+      count_only = true;
+    }
+  }
+  return ret;
+}
+
 int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_match_exprs,
                                            const ObIArray<ObRawExpr *> &scan_match_filters,
                                            const ObIArray<ObRawExpr *> &all_match_filters,
@@ -12054,6 +12088,14 @@ int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_mat
     if (curr_filter != match_pred) {
       if (OB_FAIL(scan_filters.push_back(curr_filter))) {
       }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    bool count_only = false;
+    if (OB_FAIL(check_text_scan_count_only(get_stmt(), scan_filters, count_only))) {
+      LOG_WARN("failed to check count only text scan", K(ret));
+    } else {
+      table_scan->get_text_retrieval_info().count_only_ = count_only;
     }
   }
   return ret;
@@ -12167,6 +12209,94 @@ int ObLogPlan::prepare_text_retrieval_merge(const ObIArray<ObRawExpr *> &merge_m
   return ret;
 }
 
+
+// Decide whether the relevance score of the match expression can be skipped.
+// Only the scalar aggregate query (e.g. "select count(*) from t where match(...)")
+// is handled here: its result contains exactly one row, so the order by item
+// which is generated for the match expression by the pre-process transform can
+// not change the query result, then the score is only needed when it is consumed
+// as a value by the select list, the having clause, or a predicate which needs
+// an accurate score (e.g. "match(...) > 0.5").
+static bool expr_refers_to_score(ObRawExpr *expr, ObRawExpr *match_expr)
+{
+  bool found = false;
+  if (NULL != expr) {
+    if (expr == match_expr) {
+      found = true;
+    } else {
+      for (int64_t i = 0; !found && i < expr->get_param_count(); ++i) {
+        found = expr_refers_to_score(expr->get_param_expr(i), match_expr);
+      }
+    }
+  }
+  return found;
+}
+
+static int check_need_calc_relevance_for_scalar_agg(ObExecContext *exec_ctx,
+                                                    const ObDMLStmt *stmt,
+                                                    ObRawExpr *match_expr,
+                                                    bool &need_calc)
+{
+  int ret = OB_SUCCESS;
+  const ObSelectStmt *select_stmt = NULL;
+  ObSEArray<ObExprConstraint, 2> constraints;
+  bool score_used = false;
+  need_calc = true;
+  if (OB_ISNULL(exec_ctx) || OB_ISNULL(stmt) || OB_ISNULL(match_expr)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), KP(exec_ctx), KP(stmt), KP(match_expr));
+  } else if (!stmt->is_select_stmt()) {
+    // only the scalar aggregate select stmt is taken into account
+  } else if (OB_FALSE_IT(select_stmt = static_cast<const ObSelectStmt *>(stmt))) {
+  } else if (!select_stmt->is_scala_group_by()
+             || select_stmt->has_limit()
+             || select_stmt->has_window_function()) {
+    // the output row count or the output order may depend on the score
+  } else {
+    bool ref_found = false;
+    for (int64_t i = 0; !ref_found && i < select_stmt->get_select_item_size(); ++i) {
+      ref_found = expr_refers_to_score(select_stmt->get_select_item(i).expr_, match_expr);
+    }
+    for (int64_t i = 0; !ref_found && i < select_stmt->get_having_expr_size(); ++i) {
+      ref_found = expr_refers_to_score(select_stmt->get_having_exprs().at(i), match_expr);
+    }
+    for (int64_t i = 0; !ref_found && i < select_stmt->get_condition_size(); ++i) {
+      ref_found = expr_refers_to_score(select_stmt->get_condition_exprs().at(i), match_expr);
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !ref_found && !score_used && i < select_stmt->get_select_item_size(); ++i) {
+      const SelectItem &item = select_stmt->get_select_item(i);
+      if (OB_ISNULL(item.expr_)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(ObTransformUtils::inner_check_need_calc_match_score(
+                     exec_ctx, item.expr_, match_expr, score_used, constraints))) {
+        LOG_WARN("failed to check need calc match score", K(ret));
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !score_used && i < select_stmt->get_having_expr_size(); ++i) {
+      ObRawExpr *having_expr = select_stmt->get_having_exprs().at(i);
+      if (OB_ISNULL(having_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(ObTransformUtils::inner_check_need_calc_match_score(
+                     exec_ctx, having_expr, match_expr, score_used, constraints))) {
+        LOG_WARN("failed to check need calc match score", K(ret));
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !score_used && i < select_stmt->get_condition_size(); ++i) {
+      ObRawExpr *condition = select_stmt->get_condition_exprs().at(i);
+      if (OB_ISNULL(condition)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(ObTransformUtils::inner_check_need_calc_match_score(
+                     exec_ctx, condition, match_expr, score_used, constraints))) {
+        LOG_WARN("failed to check need calc match score", K(ret));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      need_calc = ref_found || score_used;
+    }
+  }
+  return ret;
+}
+
 int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
                                            const uint64_t index_table_id,
                                            ObMatchFunRawExpr *match_against,
@@ -12251,18 +12381,12 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
     }
   }
   if (OB_SUCC(ret)) {
-    /*
-    if (OB_FAIL(ObTransformUtils::check_need_calc_match_score(get_optimizer_context().get_exec_ctx(),
-                                                              get_stmt(),
-                                                              match_against,
-                                                              need_calc_relevance,
-                                                              constraints))) {
+    if (OB_FAIL(check_need_calc_relevance_for_scalar_agg(get_optimizer_context().get_exec_ctx(),
+                                                         get_stmt(),
+                                                         match_against,
+                                                         need_calc_relevance))) {
       LOG_WARN("failed to check need calc relevance", K(ret));
-    } else if (!need_calc_relevance &&
-               OB_FAIL(append_array_no_dup(get_optimizer_context().get_query_ctx()->all_expr_constraints_, constraints))) {
-      LOG_WARN("failed to append array no dup", K(ret));
     }
-    */
     tr_info.match_expr_ = match_against;
     tr_info.inv_idx_tid_ = inv_idx_tid;
     tr_info.fwd_idx_tid_ = fwd_idx_tid;

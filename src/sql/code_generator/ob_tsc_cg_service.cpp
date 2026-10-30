@@ -3006,6 +3006,9 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
   } else if (OB_FAIL(cg_.generate_rt_expr(*tr_info.match_expr_->get_search_key(), text_ir_scan_ctdef.search_text_))) {
   } else {
     text_ir_scan_ctdef.mode_flag_ = tr_info.match_expr_->get_mode_flag();
+    if (tr_info.count_only_) {
+      text_ir_scan_ctdef.set_count_only_scan();
+    }
     const UIntFixedArray &inv_scan_col_id = text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->access_column_ids_;
     const ObColumnRefRawExpr *doc_id_column = tr_info.docid_or_rowkey_column_;
     const ObColumnRefRawExpr *doc_length_column = tr_info.doc_length_column_;
@@ -3019,13 +3022,16 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
         doc_length_col_idx = i;
       }
     }
-    if (OB_UNLIKELY(-1 == doc_id_col_idx || -1 == doc_length_col_idx)) {
+    if (OB_UNLIKELY(-1 == doc_id_col_idx) ||
+        OB_UNLIKELY(-1 == doc_length_col_idx && tr_info.need_calc_relevance_)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
       text_ir_scan_ctdef.inv_scan_domain_id_col_ =
           text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_id_col_idx);
-      text_ir_scan_ctdef.inv_scan_doc_length_col_ =
-          text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_length_col_idx);
+      if (-1 != doc_length_col_idx) {
+        text_ir_scan_ctdef.inv_scan_doc_length_col_ =
+            text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_length_col_idx);
+      }
       if (OB_FAIL(result_output.push_back(text_ir_scan_ctdef.inv_scan_domain_id_col_))) {
       }
     }
@@ -3088,30 +3094,45 @@ int ObTscCgService::check_skip_index_validity(const ObTextRetrievalInfo &tr_info
   ObSqlSchemaGuard *schema_guard = cg_.opt_ctx_->get_sql_schema_guard();
   const ObTableSchema *inv_idx_schema = nullptr;
   const ObColumnSchemaV2 *col_schema = nullptr;
-  int64_t column_id = 0;
+  int64_t docid_column_id = OB_INVALID_ID;
+  int64_t token_cnt_column_id = OB_INVALID_ID;
+  int64_t doc_length_column_id = OB_INVALID_ID;
+  bool docid_col_exist = false;
+  bool token_cnt_col_exist = false;
+  bool doc_length_col_exist = false;
+  bool docid_loose_min_max = false;
+  bool token_cnt_bm25_freq = false;
+  bool doc_len_bm25_len = false;
   if (OB_ISNULL(schema_guard) || OB_UNLIKELY(!tr_info.need_block_max_scan())) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(schema_guard->get_table_schema(tr_info.inv_idx_tid_, inv_idx_schema))) {
   } else if (OB_ISNULL(inv_idx_schema)) {
     ret = OB_ERR_UNEXPECTED;
-  } else if (OB_UNLIKELY(OB_INVALID_ID == (column_id = tr_info.docid_or_rowkey_column_->get_column_id()))) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_ISNULL(col_schema = inv_idx_schema->get_column_schema(column_id))){
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_UNLIKELY(!col_schema->get_skip_index_attr().has_loose_min_max())) {
-    is_valid = false;
-  } else if (OB_UNLIKELY(OB_INVALID_ID == (column_id = tr_info.token_cnt_column_->get_column_id()))) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_ISNULL(col_schema = inv_idx_schema->get_column_schema(column_id))){
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_UNLIKELY(!col_schema->get_skip_index_attr().has_bm25_token_freq_param())) {
-    is_valid = false;
-  } else if (OB_UNLIKELY(OB_INVALID_ID == (column_id = tr_info.doc_length_column_->get_column_id()))) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_ISNULL(col_schema = inv_idx_schema->get_column_schema(column_id))){
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_UNLIKELY(!col_schema->get_skip_index_attr().has_bm25_doc_len_param())) {
-    is_valid = false;
+  } else {
+    const ObString &inv_idx_name = inv_idx_schema->get_table_name_str();
+    if (OB_NOT_NULL(tr_info.docid_or_rowkey_column_)) {
+      docid_column_id = tr_info.docid_or_rowkey_column_->get_column_id();
+      if (OB_NOT_NULL(col_schema = inv_idx_schema->get_column_schema(docid_column_id))) {
+        docid_col_exist = true;
+        docid_loose_min_max = col_schema->get_skip_index_attr().has_loose_min_max();
+      }
+    }
+    if (OB_NOT_NULL(tr_info.token_cnt_column_)) {
+      token_cnt_column_id = tr_info.token_cnt_column_->get_column_id();
+      if (OB_NOT_NULL(col_schema = inv_idx_schema->get_column_schema(token_cnt_column_id))) {
+        token_cnt_col_exist = true;
+        token_cnt_bm25_freq = col_schema->get_skip_index_attr().has_bm25_token_freq_param();
+      }
+    }
+    if (OB_NOT_NULL(tr_info.doc_length_column_)) {
+      doc_length_column_id = tr_info.doc_length_column_->get_column_id();
+      if (OB_NOT_NULL(col_schema = inv_idx_schema->get_column_schema(doc_length_column_id))) {
+        doc_length_col_exist = true;
+        doc_len_bm25_len = col_schema->get_skip_index_attr().has_bm25_doc_len_param();
+      }
+    }
+    is_valid = docid_col_exist && token_cnt_col_exist && doc_length_col_exist
+               && docid_loose_min_max && token_cnt_bm25_freq && doc_len_bm25_len;
   }
   return ret;
 }
