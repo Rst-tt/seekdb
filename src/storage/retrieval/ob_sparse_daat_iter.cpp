@@ -243,7 +243,6 @@ int ObSRDaaTIterImpl::get_next_rows(const int64_t capacity, int64_t &count)
       if (count > 0 && OB_FAIL(project_results(count))) {
       }
     }
-
   }
   return ret;
 }
@@ -267,6 +266,7 @@ int ObSRDaaTIterImpl::do_one_merge_round(int64_t &count)
   } else if (need_project && OB_FAIL(cache_result(count, *id_datum, relevance))) {
     if (OB_ITER_END != ret) {
     }
+  } else {
   }
   return ret;
 }
@@ -286,7 +286,9 @@ int ObSRDaaTIterImpl::fill_merge_heap()
       } else {
         ret = OB_SUCCESS;
       }
-    } else if (OB_FAIL(dim_iter->get_curr_score(item.relevance_))) {
+    } else if (OB_ISNULL(iter_param_->relevance_expr_)
+                   ? (item.relevance_ = 1.0, false)
+                   : OB_FAIL(dim_iter->get_curr_score(item.relevance_))) {
     } else if (OB_NOT_NULL(iter_param_->dim_weights_) && FALSE_IT(item.relevance_ = item.relevance_ * iter_param_->field_boost_ * iter_param_->dim_weights_->at(iter_idx))) {
     } else if (OB_FAIL(dim_iter->get_curr_id(iter_domain_ids_[iter_idx]))) {
     } else if (FALSE_IT(item.iter_idx_ = iter_idx)) {
@@ -362,7 +364,7 @@ int ObSRDaaTIterImpl::filter_on_demand(const int64_t count, const double relevan
     } else {
       guard.set_batch_idx(count);
       ObDatum &relevance_proj_datum = relevance_proj_expr->locate_datum_for_write(*eval_ctx);
-      relevance_proj_datum.set_double(relevance);
+      relevance_proj_datum.set_double(nullptr == iter_param_->relevance_expr_ ? 1.0 : relevance);
       relevance_proj_expr->get_evaluated_flags(*eval_ctx).set(count);
       relevance_proj_expr->set_evaluated_projected(*eval_ctx);
       ObDatum *filter_res = nullptr;
@@ -377,7 +379,7 @@ int ObSRDaaTIterImpl::filter_on_demand(const int64_t count, const double relevan
   } else {
     guard.set_batch_idx(0);
     ObDatum &relevance_proj_datum = relevance_proj_expr->locate_datum_for_write(*eval_ctx);
-    relevance_proj_datum.set_double(relevance);
+    relevance_proj_datum.set_double(nullptr == iter_param_->relevance_expr_ ? 1.0 : relevance);
     relevance_proj_expr->set_evaluated_projected(*eval_ctx);
   }
   return ret;

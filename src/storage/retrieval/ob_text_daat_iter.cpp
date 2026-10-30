@@ -70,7 +70,7 @@ int ObTextDaaTIter::pre_process()
   int ret = OB_SUCCESS;
   if (dim_iters_->count() == 0) {
     ret = OB_ITER_END;
-  } else if (iter_param_->need_project_relevance()) {
+  } else if (iter_param_->need_project_relevance() && OB_NOT_NULL(iter_param_->relevance_expr_)) {
     if (OB_FAIL(bm25_param_estimator_.do_estimation(*iter_param_->eval_ctx_))) {
     }
   }
@@ -123,7 +123,7 @@ int ObTextBMWIter::get_next_rows(const int64_t capacity, int64_t &count)
     ret = OB_NOT_INIT;
   } else if (dim_iters_->count() == 0) {
     ret = OB_ITER_END;
-  } else if (OB_FAIL(bm25_param_estimator_.do_estimation(*iter_param_->eval_ctx_))) {
+  } else if (OB_NOT_NULL(iter_param_->relevance_expr_) && OB_FAIL(bm25_param_estimator_.do_estimation(*iter_param_->eval_ctx_))) {
   }
 
   if (FAILEDx(ObSRBMWIterImpl::get_next_rows(capacity, count))) {
