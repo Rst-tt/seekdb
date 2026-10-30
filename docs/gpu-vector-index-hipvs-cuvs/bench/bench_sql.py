@@ -226,14 +226,35 @@ def run_bench(args):
             print("[bench] query phase error: %r" % (e,), flush=True)
 
         # ---- gate flags from the observer log ----
-        log = open(os.path.join(data_dir, "log", "seekdb.log"), errors="ignore").read()
-        res["saw_cuvs_build"] = "cuvs_build" in log
-        res["saw_cuvs_serve"] = "cuvs_serve" in log
-        res["saw_vsag_fallback"] = "lazily built VSAG fallback" in log
-        res["saw_serialized"] = "serialized GPU CAGRA snapshot" in log
-        for line in log.splitlines():
-            if "[OBVSAG][cuVS]" in line and ("snapshot" in line or "built GPU" in line):
-                print("[log]", line.strip()[:300], flush=True)
+        # The observer rotates its log (log_disk_size), so the markers can sit
+        # in seekdb.log.<timestamp>; every rotated file has to be scanned.
+        log_dir = os.path.join(data_dir, "log")
+        flags = {"cuvs_build": False, "cuvs_serve": False,
+                 "lazily built VSAG fallback": False,
+                 "serialized GPU CAGRA snapshot": False,
+                 "deserialized GPU CAGRA snapshot": False}
+        obvsag_lines = []
+        if os.path.isdir(log_dir):
+            for name in sorted(os.listdir(log_dir)):
+                if not name.startswith("seekdb.log"):
+                    continue
+                try:
+                    with open(os.path.join(log_dir, name), errors="ignore") as fh:
+                        for line in fh:
+                            for key in flags:
+                                if key in line:
+                                    flags[key] = True
+                            if "[OBVSAG][cuVS]" in line and ("snapshot" in line or "built GPU" in line):
+                                obvsag_lines.append(line.strip()[:300])
+                except OSError:
+                    pass
+        res["saw_cuvs_build"] = flags["cuvs_build"]
+        res["saw_cuvs_serve"] = flags["cuvs_serve"]
+        res["saw_vsag_fallback"] = flags["lazily built VSAG fallback"]
+        res["saw_serialized"] = flags["serialized GPU CAGRA snapshot"]
+        res["saw_deserialized"] = flags["deserialized GPU CAGRA snapshot"]
+        for line in obvsag_lines[-20:]:
+            print("[log]", line, flush=True)
         try:
             obs_out = open(data_dir + ".out", errors="ignore").read()
             for line in obs_out.splitlines():

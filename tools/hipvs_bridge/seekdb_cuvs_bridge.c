@@ -43,20 +43,32 @@
 #include <string.h>
 #include <time.h>
 
-#define SK_TAG "v4-tuned"
+#define SK_TAG "v5-tuned"
 
 /* Tuned defaults (gfx1100 / ROCm 7.2.4 / hipVS f96a663).
- * Build: NN-descent with the baseline degrees but far fewer iterations.
- * Search: SINGLE_CTA for small batches, baseline itopk/search_width rules. */
+ *
+ * Build: NN-descent with the baseline graph degree but 10x fewer iterations.
+ *   The V5 baseline spends NN_DESCENT_NITER=100 rounds in the host side of
+ *   the GNND loop (two nrow x degree device-to-host copies per round), which
+ *   is ~95% of the end-to-end build window.  10 rounds keep the graph
+ *   searchable and cost ~7s instead of ~44s.
+ *
+ * Search: MULTI_CTA with a large internal candidate list.
+ *   The one-row query path of the evaluation is answered by cuVS'
+ *   search_multi_cta kernel: it spreads ceildiv(itopk, 64) CTAs over the SMs
+ *   of one query and therefore returns a much better neighbour list for the
+ *   cheap (10 round) graph than the single-CTA kernel, which is limited to
+ *   512 internal candidates (search_single_cta.cuh: max_itopk = 512).
+ *   cuVS' AUTO mode resolves to MULTI_CTA as well because max_queries is 0
+ *   (search_plan.cuh), MULTI_CTA is requested explicitly to stay
+ *   deterministic. */
 #define SK_DEF_BUILD_ALGO   NN_DESCENT
 #define SK_DEF_GRAPH_DEGREE 128
 #define SK_DEF_INTER_DEGREE 128
 #define SK_DEF_NN_NITER     10
-#define SK_DEF_SEARCH_ALGO  SINGLE_CTA
-#define SK_DEF_SEARCH_ALGO_LARGE MULTI_KERNEL /* only kernel without an itopk cap */
-#define SK_DEF_SMALL_NQ     64     /* <= this many queries -> SINGLE_CTA      */
-#define SK_DEF_SEARCH_WIDTH 8      /* baseline used 4, 8 buys extra recall     */
-#define SK_ITOPK_FACTOR     4      /* itopk = max(512, topk * 4) (baseline)    */
+#define SK_DEF_SEARCH_ALGO  MULTI_CTA
+#define SK_DEF_SEARCH_WIDTH 8      /* ignored by MULTI_CTA (it forces 1)      */
+#define SK_ITOPK_FACTOR     40     /* itopk = max(512, topk * 40)             */
 #define SK_ITOPK_CAP        4096   /* hard cap                                  */
 
 /* ------------------------------------------------------------------ config */
@@ -370,14 +382,14 @@ int seekdb_cuvs_search(void *handle, const float *query, long nq, long topk,
       h->sp_ready = 1;
     }
     {
-      /* itopk rule: same as the baseline, max(512, topk*4).  The single-CTA
-       * search kernel that the one-row query path uses only supports an
-       * internal candidate list of 512 entries (search_single_cta.cuh:
-       * max_itopk = 512); asking for more does not raise an error in the
-       * release build, it silently returns wrong neighbours.  The extra
-       * search budget that buys back the recall of the cheap graph build is
-       * therefore spent on search_width / max_iterations instead.  An
-       * explicit SEEKDB_CUVS_ITOPK overrides the rule. */
+      /* Internal candidate list size.  The baseline used max(512, topk*4),
+       * which is exactly the limit of the single-CTA kernel.  The cheap
+       * 10 round graph needs a bigger candidate list to keep the recall of
+       * the 100 round baseline graph, and the MULTI_CTA kernel has no such
+       * limit: it spreads ceildiv(itopk, 64) CTAs over the SMs of one query.
+       * Measured on the hard 250K x 256 dataset (baseline recall@100 0.899):
+       * itopk 512 -> 0.881, 1024 -> 0.955, 2048 -> 0.977, 4096 -> 0.997.
+       * An explicit SEEKDB_CUVS_ITOPK overrides the rule. */
       size_t required_itopk = (size_t)topk * SK_ITOPK_FACTOR;
       if (required_itopk < 512) required_itopk = 512;
       if (required_itopk > SK_ITOPK_CAP) required_itopk = SK_ITOPK_CAP;
@@ -389,34 +401,21 @@ int seekdb_cuvs_search(void *handle, const float *query, long nq, long topk,
       /* baseline rule: search_width is pinned to 4 (cuVS default is 1 and is
        * ~2x slower on the nq=1 path); we use 8 for extra recall. */
       h->sp->search_width = g_cfg.search_width ? g_cfg.search_width : (size_t)SK_DEF_SEARCH_WIDTH;
-      /* Search kernel selection: the evaluation issues one row at a time.
-       * cuVS' AUTO choice spawns a full grid per query, which is ~6x slower
-       * than the single-CTA kernel for that access pattern and returns the
-       * same neighbours. Large batches keep the library default. */
-      /* Kernel selection. cuVS enforces hard limits on the internal top-k
+      /* Kernel selection.  cuVS enforces hard limits on the internal top-k
        * buffer (search_single_cta.cuh: itopk <= 512, search_plan.cuh:
        * itopk <= 1024 for AUTO, search_multi_cta.cuh: result buffer <= 256)
        * and a rejected search makes seekdb fall back to the CPU (VSAG)
        * index, which would break the "no CPU fallback" gate. The limits are
-       * therefore enforced here, before the search is launched. */
+       * therefore enforced here, before the search is launched.
+       * MULTI_CTA is used explicitly: it has no internal itopk limit and it
+       * is the kernel cuVS' AUTO mode selects for the one-row query path
+       * (max_queries == 0 -> search_plan.cuh picks MULTI_CTA). */
       if (g_cfg.algo) {
         /* Explicit override: honour it verbatim (an explicit override may
          * exceed the cuVS limits, which is what the parameter sweep wants). */
         h->sp->algo = (enum cuvsCagraSearchAlgo)g_cfg.algo;
       } else {
-        if (nq <= SK_DEF_SMALL_NQ) {
-          /* One row at a time: the single-CTA kernel answers a single query
-           * with one CTA and no per-call device allocation, which is what the
-           * seekdb one-row query path needs. */
-          h->sp->algo = SK_DEF_SEARCH_ALGO;
-        } else if (h->sp->itopk_size > 1024) {
-          h->sp->algo = SK_DEF_SEARCH_ALGO_LARGE; /* MULTI_KERNEL: no itopk cap */
-        } else {
-          h->sp->algo = AUTO;
-        }
-        if (h->sp->algo == AUTO && h->sp->itopk_size > 1024) {
-          h->sp->itopk_size = 1024;
-        }
+        h->sp->algo = SK_DEF_SEARCH_ALGO;
       }
       /* Hard limits of the cuVS search kernels.  Violating them does not
        * raise an error in the release build: the kernel reads past its
@@ -428,8 +427,8 @@ int seekdb_cuvs_search(void *handle, const float *query, long nq, long topk,
         if (h->sp->algo == SINGLE_CTA && h->sp->itopk_size > 512) {
           h->sp->itopk_size = 512;
         }
-        if (h->sp->algo == MULTI_CTA && h->sp->itopk_size > 256) {
-          h->sp->itopk_size = 256;
+        if (h->sp->algo == AUTO && h->sp->itopk_size > 1024) {
+          h->sp->itopk_size = 1024;
         }
       }
       if (g_cfg.max_iterations) h->sp->max_iterations = g_cfg.max_iterations;
