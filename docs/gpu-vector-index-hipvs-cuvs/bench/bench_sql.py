@@ -29,6 +29,10 @@ import time
 import numpy as np
 
 MYSQL = ["mysql", "-h127.0.0.1", "-P2881", "-uroot"]
+# Files that must not be copied into a reused observer data directory:
+# the observer self-symlink ("seekdb"), the unix socket and the log
+# directory (the observer recreates all of them).
+TEMPLATE_IGNORE = shutil.ignore_patterns("*.sock", "sql.sock", "seekdb", "log")
 
 
 def sh(cmd, inp=None, timeout=None):
@@ -144,7 +148,9 @@ def run_bench(args):
 
     t_prep0 = time.time()
     if args.template:
-        shutil.copytree(args.template, data_dir)
+        # The observer creates a "seekdb" symlink in its base dir and a
+        # unix socket in run/; both break a plain copy of the data dir.
+        shutil.copytree(args.template, data_dir, ignore=TEMPLATE_IGNORE)
     else:
         os.makedirs(data_dir, exist_ok=True)
     res = {"dataset": args.dataset, "nq": nq, "dim": dim,
@@ -157,7 +163,7 @@ def run_bench(args):
         res["load_s"] = round(load_s, 2)
         print(f"[bench] loaded {n} rows in {load_s:.1f}s", flush=True)
         if args.save_template and not os.path.exists(args.save_template):
-            shutil.copytree(data_dir, args.save_template)
+            shutil.copytree(data_dir, args.save_template, ignore=TEMPLATE_IGNORE)
             print(f"[bench] saved template -> {args.save_template}", flush=True)
 
         # ---- build window: CREATE VECTOR INDEX (+ first query) ----
